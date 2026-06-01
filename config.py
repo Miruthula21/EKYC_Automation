@@ -21,10 +21,10 @@ TEST_DATA = {
     "aadhaar":          "490112030760",      # 12-digit Aadhaar
     "digilocker_pin":   "220504",            # DigiLocker security PIN
     "pan":              "PTVPS6088B",        # PAN number
-    "bank_account":     "5247140373",        # Default/Protean bank account number
-    "ifsc":             "KKBK0000469",       # Default/Protean IFSC
-    "protean_account":  "5247140373",        # Protean bank account number
-    "protean_ifsc":     "KKBK0000469",       # Protean IFSC
+    "bank_account":     "33939500923",        # Default/Protean bank account number
+    "ifsc":             "SBIN0002254",       # Default/Protean IFSC
+    "protean_account":  "33939500923",        # Protean bank account number
+    "protean_ifsc":     "SBIN0002254",       # Protean IFSC
     "onemoney_account": "33939500923",       # Onemoney account number
     "onemoney_ifsc":    "SBIN0002254",       # Onemoney IFSC
     "micr":             "XXXXXXXXX",         # 9-digit MICR (optional)
@@ -44,7 +44,7 @@ TEST_FILES = {
 EMAIL_REPORT = {
     "sender"      : "miruthulak21@gmail.com",       # Gmail you are sending FROM
     "password"    : "jbor rqbh eniq pkpw",      # Gmail App Password (not normal password)
-    "receiver"    : ["miruthulak21@gmail.com", "elamukil@navia.co.in"],   # Email to receive the report
+    "receiver"    : "miruthulak21@gmail.com",   # Email to receive the report
     "smtp_server" : "smtp.gmail.com",
     "smtp_port"   : 465
 }

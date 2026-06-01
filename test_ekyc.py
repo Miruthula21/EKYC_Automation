@@ -285,6 +285,19 @@ def wait_after_digilocker_submit(page: Page, timeout: int = 45_000) -> None:
         page.wait_for_timeout(1_000)
     log(f"  DigiLocker return wait timed out at URL: {page.url}")
 
+
+
+def open_isolated_yopmail_page(ctx: BrowserContext):
+    """Open Yopmail as the next tab in the same Chrome window."""
+    return None, ctx.new_page()
+
+def close_isolated_yopmail_page(mail_ctx, mail_page) -> None:
+    try:
+        if mail_page and not mail_page.is_closed():
+            mail_page.close()
+    except Exception:
+        pass
+
 def wait_for_yopmail_captcha_clear(page: Page, label: str, max_wait: int = 90) -> bool:
     deadline = time.time() + max_wait
     warned = False
@@ -965,7 +978,7 @@ def get_all_pages(ctx: BrowserContext) -> list:
 # ─────────────────────────── YOPmail OTP Helper ─────────────────────────────
 
 def get_otp_from_yopmail_new_tab(ctx: BrowserContext, email: str, max_wait: int = 120, context_words: list[str] | None = None) -> str | None:
-    tab = ctx.new_page()
+    mail_ctx, tab = open_isolated_yopmail_page(ctx)
     try:
         username = email.split("@")[0]
         log(f"[YOPmail] Navigating to inbox for: {username}")
@@ -1058,7 +1071,7 @@ def get_otp_from_yopmail_new_tab(ctx: BrowserContext, email: str, max_wait: int 
         return None
 
     finally:
-        tab.close()
+        close_isolated_yopmail_page(mail_ctx, tab)
 
 
 # ─────────────────────────── Step 1: Launch URL ─────────────────────────────
@@ -1086,7 +1099,7 @@ def step_enter_mobile_and_verify_otp(page: Page, ctx: BrowserContext) -> bool:
         log("  Checking yopmail for any existing OTP before submitting mobile...")
         old_otp = None
         try:
-            pre_page = ctx.new_page()
+            pre_ctx, pre_page = open_isolated_yopmail_page(ctx)
             pre_page.goto(
                 f"https://yopmail.com/en/?login={yopmail.split('@')[0]}",
                 wait_until="domcontentloaded",
@@ -1105,11 +1118,11 @@ def step_enter_mobile_and_verify_otp(page: Page, ctx: BrowserContext) -> bool:
             if matches:
                 old_otp = matches[-1] if matches[-1] != "2026" else None
             log(f"  Old OTP in inbox: {old_otp}")
-            pre_page.close()
+            close_isolated_yopmail_page(pre_ctx, pre_page)
         except Exception as e:
             log(f"  Could not read old OTP (inbox may be empty): {e}")
             if 'pre_page' in locals() and not pre_page.is_closed():
-                pre_page.close()
+                close_isolated_yopmail_page(pre_ctx, pre_page)
 
         # ── Enter Mobile Number ──
         mob_field = page.locator("//input[@placeholder='Mobile Number']").first
@@ -1128,7 +1141,7 @@ def step_enter_mobile_and_verify_otp(page: Page, ctx: BrowserContext) -> bool:
         repeated_old_otp = None
         try:
             log("  Opening single persistent yopmail tab...")
-            yop_page = ctx.new_page()
+            mail_ctx, yop_page = open_isolated_yopmail_page(ctx)
             yop_page.goto(
                 f"https://yopmail.com/en/?login={yopmail.split('@')[0]}",
                 wait_until="domcontentloaded",
@@ -1181,9 +1194,9 @@ def step_enter_mobile_and_verify_otp(page: Page, ctx: BrowserContext) -> bool:
         except Exception as open_err:
             log(f"  Failed to open yopmail tab: {open_err}")
         finally:
-            if yop_page and not yop_page.is_closed():
-                yop_page.close()
-                log("  Yopmail tab closed")
+            if yop_page:
+                close_isolated_yopmail_page(locals().get("mail_ctx"), yop_page)
+                log("  Yopmail isolated context closed")
 
         if not otp and repeated_old_otp:
             otp = repeated_old_otp
@@ -1347,8 +1360,19 @@ def step_aadhaar_verification(page: Page, ctx: BrowserContext) -> bool:
 
         aadhaar_input.scroll_into_view_if_needed()
         aadhaar_input.click()
-        aadhaar_input.fill("")
-        aadhaar_input.press_sequentially(aadhaar, delay=100)
+        aadhaar_input.press("Control+A")
+        aadhaar_input.fill(aadhaar)
+        try:
+            entered_aadhaar = aadhaar_input.input_value(timeout=1000)
+        except Exception:
+            entered_aadhaar = ""
+        if entered_aadhaar != aadhaar:
+            aadhaar_input.click()
+            aadhaar_input.press("Control+A")
+            aadhaar_input.type(aadhaar, delay=40)
+            entered_aadhaar = aadhaar_input.input_value(timeout=1000)
+        if entered_aadhaar != aadhaar:
+            raise RuntimeError(f"Aadhaar entry mismatch. expected={aadhaar}, actual={entered_aadhaar}")
         log(f"  Aadhaar typed: {aadhaar}")
 
         # ── Click Next/Submit ──
@@ -1401,7 +1425,7 @@ def step_aadhaar_verification(page: Page, ctx: BrowserContext) -> bool:
             while time.time() - start_time < 120:
                 yop_page = None
                 try:
-                    yop_page = ctx.new_page()
+                    mail_ctx, yop_page = open_isolated_yopmail_page(ctx)
                     yop_page.goto(
                         f"https://yopmail.com/en/?login={yopmail.split('@')[0]}",
                         wait_until="domcontentloaded",
@@ -1427,8 +1451,8 @@ def step_aadhaar_verification(page: Page, ctx: BrowserContext) -> bool:
                 except Exception as e:
                     log(f"  OTP fetch error: {e}")
                 finally:
-                    if yop_page and not yop_page.is_closed():
-                        yop_page.close()
+                    if yop_page:
+                        close_isolated_yopmail_page(locals().get("mail_ctx"), yop_page)
 
                 page.wait_for_timeout(5000)
 
@@ -1497,7 +1521,8 @@ def step_aadhaar_verification(page: Page, ctx: BrowserContext) -> bool:
         return False
 
 
-# ─────────────────────────── Step 4: Bank Details ───────────────────────────
+
+
 
 def step_bank_details(page: Page) -> bool:
     STEP = "Bank Details Entry"
@@ -1507,7 +1532,7 @@ def step_bank_details(page: Page) -> bool:
             page.wait_for_url(lambda url: "bank" in url.lower(), timeout=20000)
             log(f"  Bank page loaded: {page.url}")
         except Exception:
-            log(f"  Current URL: {page.url} — continuing anyway")
+            log(f"  Current URL: {page.url} - continuing anyway")
 
         page.wait_for_load_state("domcontentloaded", timeout=15000)
         page.wait_for_timeout(2000)
@@ -1517,25 +1542,21 @@ def step_bank_details(page: Page) -> bool:
             if bank_details_page_ready(page):
                 bank_ready = True
                 break
-            page.wait_for_timeout(1_000)
+            page.wait_for_timeout(1000)
         if not bank_ready:
             step_fail(STEP, f"Bank details controls not ready. Current URL: {page.url}")
             return False
 
         log("  Clicking 'Enter bank details manually'...")
         manual_link_clicked = bank_manual_form_visible(page) or click_enter_bank_details_manually(page)
-
         if not manual_link_clicked:
-            log("  Manual link did not reveal account field; retrying once after scroll")
             page.mouse.wheel(0, 300)
             page.wait_for_timeout(500)
             manual_link_clicked = click_enter_bank_details_manually(page)
-
         if not manual_link_clicked and not bank_manual_form_visible(page):
             step_fail(STEP, "Enter bank details manually link did not open account fields")
             return False
 
-        # ── Account Number ──
         acc_field = None
         for strategy in [
             "//input[@id='bankacno']",
@@ -1551,18 +1572,15 @@ def step_bank_details(page: Page) -> bool:
                     break
             except Exception:
                 continue
-
         if not acc_field:
             step_fail(STEP, "Account number input not found")
             return False
-
         acc_field.scroll_into_view_if_needed()
         acc_field.click()
-        acc_field.fill("")
-        acc_field.press_sequentially(TEST_DATA["bank_account"], delay=100)
+        acc_field.press("Control+A")
+        acc_field.fill(TEST_DATA["bank_account"])
         log(f"  Account number entered: {TEST_DATA['bank_account']}")
 
-        # ── IFSC Code ──
         ifsc_field = None
         for strategy in [
             "//input[@id='bankifsc']",
@@ -1578,110 +1596,205 @@ def step_bank_details(page: Page) -> bool:
                     break
             except Exception:
                 continue
-
         if not ifsc_field:
             step_fail(STEP, "IFSC input not found")
             return False
-
         ifsc_field.click()
-        ifsc_field.fill("")
-        ifsc_field.press_sequentially(TEST_DATA["ifsc"], delay=100)
+        ifsc_field.press("Control+A")
+        ifsc_field.fill(TEST_DATA["ifsc"])
         log(f"  IFSC entered: {TEST_DATA['ifsc']}")
 
         log("  Waiting for IFSC bank lookup to complete...")
         page.wait_for_timeout(3000)
 
-        # ── MICR ──
-        try:
-            micr_el = page.locator("//input[@placeholder='Bank MICR']").first
-            if micr_el.is_visible(timeout=3000):
-                micr_el.triple_click()
-                micr_el.fill("")
-                micr_el.press_sequentially(TEST_DATA.get("micr", ""), delay=150)
-                log(f"  MICR filled manually: {TEST_DATA.get('micr', '')}")
-        except Exception as me:
-            log(f"  MICR handling failed: {me}")
-
-        # ── Bank Pincode ──
         try:
             pin_el = page.locator("//input[@placeholder='Bank Pincode']").first
             if pin_el.is_visible(timeout=5000):
-                page.wait_for_timeout(2000)
                 for _ in range(10):
-                    page.wait_for_timeout(500)
                     fetched_value = pin_el.input_value() or ""
                     if fetched_value.strip():
                         log(f"  Bank pincode auto-fetched: {fetched_value.strip()}")
                         break
-                else:
-                    fallback = TEST_DATA.get("bank_pincode", "000000")
-                    if fallback:
-                        pin_el.triple_click()
-                        pin_el.fill("")
-                        pin_el.press_sequentially(fallback, delay=150)
-                        log(f"  Bank pincode filled manually: {pin_el.input_value()}")
-                    else:
-                        log("  Bank pincode empty and no fallback — skipping")
+                    page.wait_for_timeout(500)
         except Exception as pe:
             log(f"  Bank pincode handling failed: {pe}")
 
-        # ── Verify & Proceed ──
         log("  Clicking Verify & Proceed...")
-        for strategy in [
-            "//button[contains(text(),'Verify & Proceed')]",
-            "//button[contains(text(),'Verify and Proceed')]",
-            "//input[@value='Verify & Proceed']",
-            "//button[contains(text(),'Verify')]",
-            "//button[@type='submit']",
-        ]:
-            try:
-                btn = page.locator(strategy).first
-                if btn.is_visible(timeout=3000) and btn.is_enabled():
-                    btn.scroll_into_view_if_needed()
-                    btn.click()
-                    log(f"  Verify & Proceed clicked via: {strategy}")
-                    page.wait_for_timeout(2000)
-                    break
-            except Exception:
-                continue
-
+        clicked_verify = click_bank_verify_and_proceed(page)
+        log(f"  Verify & Proceed clicked via: {clicked_verify}")
         step_pass(STEP, f"Acc: {TEST_DATA['bank_account']}  IFSC: {TEST_DATA['ifsc']}")
         return True
-
     except Exception as e:
         step_fail(STEP, str(e))
         return False
 
 
-# ─────────────────────────── Step 5: Bank Mismatch Popup ────────────────────
+def click_bank_verify_and_proceed(page: Page) -> str:
+    selectors = [
+        "xpath=//*[self::button or self::input or @role='button'][contains(normalize-space(.),'Verify & Proceed')]",
+        "xpath=//*[self::button or self::input or @role='button'][contains(normalize-space(.),'Verify and Proceed')]",
+        "xpath=//*[self::button or self::input or @role='button'][contains(normalize-space(.),'Verify')]",
+        "xpath=//input[contains(@value,'Verify')]",
+        "xpath=//*[@id='bank_verify' or @id='verify_bank' or @id='verifyBank']",
+    ]
+    last_error = None
+    for selector in selectors:
+        try:
+            loc = page.locator(selector).first
+            if loc.is_visible(timeout=2500):
+                loc.scroll_into_view_if_needed(timeout=2000)
+                loc.click(force=True, timeout=3000)
+                page.wait_for_timeout(2500)
+                return selector
+        except Exception as exc:
+            last_error = exc
+    try:
+        result = page.evaluate("""
+        () => {
+            const visible = el => {
+                const r = el.getBoundingClientRect();
+                const s = getComputedStyle(el);
+                return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
+            };
+            const controls = [...document.querySelectorAll('button,input[type=button],input[type=submit],a,[role=button]')];
+            const btn = controls.find(el => visible(el) && /verify/i.test((el.innerText || el.value || '').trim()));
+            if (!btn) return {ok:false, reason:'verify button not found'};
+            btn.scrollIntoView({block:'center'});
+            btn.click();
+            return {ok:true, text:(btn.innerText || btn.value || '').trim(), id:btn.id || '', tag:btn.tagName};
+        }
+        """)
+        if result and result.get('ok'):
+            page.wait_for_timeout(2500)
+            return f"dom_verify_click={result}"
+        last_error = result
+    except Exception as exc:
+        last_error = exc
+    raise RuntimeError(f"Verify & Proceed button not clicked; last_error={last_error}; url={page.url}")
+
+
+def click_proceed_anyway_popup(page: Page, timeout_ms: int = 25000) -> str:
+    """Click the bank mismatch Proceed Anyway button and wait until the popup is gone or AA page opens."""
+    deadline = time.time() + timeout_ms / 1000
+    last_error = None
+
+    exact_selectors = [
+        "xpath=//button[normalize-space()='Proceed Anyway']",
+        "xpath=//*[self::button or self::div or @role='button'][normalize-space()='Proceed Anyway']",
+        "xpath=//*[contains(normalize-space(.),'Your bank account could not be verified')]/following::*[self::button or self::div or @role='button'][normalize-space()='Proceed Anyway'][1]",
+        "text=Proceed Anyway",
+    ]
+
+    def popup_gone_or_next_page() -> bool:
+        try:
+            page.wait_for_load_state("domcontentloaded", timeout=3000)
+        except Exception:
+            pass
+        url = page.url.lower()
+        if 'bank_details_aggree' in url or 'bank_details_agree' in url or 'onemoney' in url:
+            return True
+        try:
+            btn = page.locator("xpath=//button[normalize-space()='Proceed Anyway']").first
+            if not btn.is_visible(timeout=700):
+                return True
+        except Exception:
+            return True
+        return False
+
+    while time.time() < deadline:
+        for selector in exact_selectors:
+            try:
+                loc = page.locator(selector).first
+                loc.wait_for(state="visible", timeout=1500)
+                loc.scroll_into_view_if_needed(timeout=1500)
+                try:
+                    loc.click(timeout=2500)
+                except Exception:
+                    loc.click(force=True, timeout=2500)
+                page.wait_for_timeout(3000)
+                if popup_gone_or_next_page():
+                    return f"locator_click={selector}"
+                last_error = f"clicked but popup still visible via {selector}"
+            except Exception as exc:
+                last_error = exc
+
+        try:
+            result = page.evaluate("""
+            () => {
+                const visible = el => {
+                    const r = el.getBoundingClientRect();
+                    const s = getComputedStyle(el);
+                    return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden' && Number(s.opacity || 1) > 0;
+                };
+                const all = [...document.querySelectorAll('button,a,div,[role=button],input[type=button],input[type=submit]')];
+                const btn = all.find(el => visible(el) && /^\\s*Proceed Anyway\\s*$/i.test((el.innerText || el.value || '').trim()));
+                if (!btn) return {ok:false, reason:'exact Proceed Anyway button not visible'};
+                btn.scrollIntoView({block:'center', inline:'center'});
+                const r = btn.getBoundingClientRect();
+                return {ok:true, x: Math.round(r.left + r.width/2), y: Math.round(r.top + r.height/2), text:(btn.innerText || btn.value || '').trim(), tag:btn.tagName, id:btn.id || ''};
+            }
+            """)
+            if result and result.get('ok'):
+                page.mouse.click(result['x'], result['y'])
+                page.wait_for_timeout(3000)
+                if popup_gone_or_next_page():
+                    return f"mouse_click={result}"
+                page.keyboard.press('Enter')
+                page.wait_for_timeout(3000)
+                if popup_gone_or_next_page():
+                    return f"mouse_click_enter={result}"
+                last_error = f"clicked but popup still visible: {result}"
+            else:
+                last_error = result
+        except Exception as exc:
+            last_error = exc
+
+    body = ''
+    try:
+        body = page.locator('body').inner_text(timeout=1000)[:700]
+    except Exception:
+        pass
+    raise RuntimeError(f"Proceed Anyway popup did not close; last_error={last_error}; url={page.url}; body={body}")
 
 def step_bank_mismatch_popup(page: Page) -> bool:
     STEP = "Bank Mismatch Check"
     try:
-        proceed_anyway = page.locator("xpath=//*[contains(text(),'Proceed Anyway')]").first
-        if proceed_anyway.is_visible(timeout=2_000):
-            proceed_anyway.click()
-            log("  Unexpected bank mismatch popup appeared; clicked Proceed Anyway")
-            page.wait_for_timeout(2_000)
-            step_pass(STEP, "Mismatch popup handled")
-        else:
-            log("  No bank mismatch expected for this account")
-            step_pass(STEP, "No mismatch")
+        clicked = click_proceed_anyway_popup(page, timeout_ms=20000)
+        log(f"  Bank mismatch popup handled and closed via {clicked}")
+        step_pass(STEP, "Mismatch popup handled")
         return True
     except Exception as e:
-        log(f"  No bank mismatch popup found: {e}")
-        step_pass(STEP, "No mismatch")
-        return True
+        log(f"  Bank mismatch popup not handled: {e}")
+        step_fail(STEP, str(e))
+        return False
 
 def step_account_aggregator(page: Page) -> bool:
-    STEP = "Account Aggregator — Proceed"
+    STEP = "Account Aggregator - Proceed"
     try:
-        scroll_by(page, 300)
-        proceed = page.locator("xpath=//a[text()='Proceed']")
-        proceed.wait_for(state="visible", timeout=20_000)
-        proceed.hover()
-        proceed.click()
-        page.wait_for_timeout(2_000)
+        page.wait_for_load_state("domcontentloaded", timeout=15000)
+        page.wait_for_timeout(1500)
+        scroll_by(page, 500)
+        clicked = False
+        for strategy in [
+            "xpath=//*[self::a or self::button or @role='button'][normalize-space()='Proceed']",
+            "xpath=//*[self::a or self::button or @role='button'][contains(normalize-space(.),'Proceed')]",
+            "xpath=//button[contains(text(),'Proceed')]",
+            "xpath=//a[contains(text(),'Proceed')]",
+        ]:
+            try:
+                proceed = page.locator(strategy).first
+                if proceed.is_visible(timeout=5000) and proceed.is_enabled():
+                    proceed.scroll_into_view_if_needed(timeout=2000)
+                    proceed.click(force=True, timeout=3000)
+                    log(f"  Account Aggregator Proceed clicked via: {strategy}")
+                    clicked = True
+                    break
+            except Exception:
+                continue
+        if not clicked:
+            step_fail(STEP, f"Proceed button not found; url={page.url}")
+            return False
+        page.wait_for_timeout(3_000)
         step_pass(STEP)
         return True
     except Exception as e:
@@ -1753,520 +1866,221 @@ def step_onemoney_login(page: Page) -> bool:
 
 
 # ─────────────────────────── Step 8: Onemoney — Enter OTP ───────────────────
-# Reads OTP from naviatestingekyc@yopmail.com inbox
+# Reads OTP from configured TEST_DATA["yopmail"] inbox
 # Matches Java: enterotp0 field + Login button
 
+
+def extract_strict_email_otp(mail_body: str) -> str | None:
+    """Prefer OTP sentence; ignore date/year values like 2026."""
+    patterns = [
+        r"\b(\d{4,6})\s+is\s+your\s+OTP\s+to\s+verify\s+your\s+email",
+        r"\b(\d{4,6})\s+is\s+your\s+OTP\b",
+        r"OTP\s*(?:is|:|-)\s*(\d{4,6})\b",
+        r"verification\D{0,40}(\d{4,6})\b",
+    ]
+    for pat in patterns:
+        m = re.search(pat, mail_body, re.I)
+        if m:
+            otp = m.group(1)
+            if otp not in {"2026", "2025", "2024"}:
+                return otp
+    return None
+
+
+def fetch_latest_yopmail_otp(ctx: BrowserContext, email: str, digits: int = 6, label: str = "OTP", max_wait: int = 90, strict_email: bool = False) -> str | None:
+    username = email.split("@")[0]
+    deadline = time.time() + max_wait
+    last_body = ""
+    while time.time() < deadline:
+        mail_ctx = None
+        yop_page = None
+        try:
+            mail_ctx, yop_page = open_isolated_yopmail_page(ctx)
+            yop_page.goto(f"https://yopmail.com/en/?login={username}", wait_until="domcontentloaded", timeout=30000)
+            yop_page.wait_for_timeout(2500)
+            try:
+                yop_page.locator("#refresh").click(timeout=2000)
+                yop_page.wait_for_timeout(2000)
+            except Exception:
+                pass
+            if not wait_for_yopmail_captcha_clear(yop_page, label, max_wait=30):
+                log(f"  YOPmail CAPTCHA blocked {label} read")
+                return None
+            body = read_latest_yopmail_body(yop_page, label)
+            last_body = body[:250]
+            otp = extract_strict_email_otp(body) if strict_email else extract_otp_from_text(body, digits=digits, context_words=["otp", "verification", "onemoney", "navia"])
+            if otp and otp not in {"2026", "2025", "2024"}:
+                log(f"  {label} fetched from YOPmail: {otp}")
+                return otp
+        except Exception as e:
+            log(f"  {label} fetch retry: {e}")
+        finally:
+            try:
+                close_isolated_yopmail_page(mail_ctx, yop_page)
+            except Exception:
+                pass
+        page_wait_ms = 3000
+        try:
+            ctx.pages[0].wait_for_timeout(page_wait_ms)
+        except Exception:
+            time.sleep(page_wait_ms / 1000)
+    log(f"  {label} not found in latest YOPmail body: {last_body}")
+    return None
+
+
+# ─────────────────────────── Step 8: Onemoney — Enter OTP ───────────────────
 def step_onemoney_otp(page: Page, ctx: BrowserContext, yopmail_user: str) -> bool:
     STEP = "Onemoney — OTP Verification"
     try:
         log("  Fetching Onemoney OTP from YOPmail...")
-
-        # ── Wait 18 seconds for OTP email (matches Java Thread.sleep(18000)) ──
-        log("  Waiting 18 seconds for Onemoney OTP email...")
         page.wait_for_timeout(18000)
-
-        # ── Open yopmail tab and get OTP ──
-        otp = None
-        yop_page = None
-        try:
-            yop_page = ctx.new_page()
-            username = yopmail_user.split("@")[0]
-            yop_page.goto(
-                f"https://yopmail.com/en/?login={username}",
-                wait_until="domcontentloaded",
-                timeout=30000
-            )
-            yop_page.wait_for_timeout(5000)
-
-            # ── Refresh inbox twice (matches Java: refresh, refresh) ──
-            for _ in range(2):
-                try:
-                    ref = yop_page.locator("#refresh")
-                    ref.wait_for(state="visible", timeout=5000)
-                    ref.click()
-                    log("  Yopmail inbox refreshed")
-                    yop_page.wait_for_timeout(2000)
-                except Exception:
-                    pass
-
-            # ── Read mail body ──
-            mail_frame = yop_page.frame_locator("#ifmail")
-            if not wait_for_yopmail_captcha_clear(yop_page, "Onemoney OTP", max_wait=90):
-                step_fail(STEP, "YOPmail CAPTCHA blocked Onemoney OTP read")
-                return False
-            mail_frame.locator("body").wait_for(timeout=10000)
-            mail_text = mail_frame.locator("body").inner_text()
-            log(f"  Yopmail body preview: {mail_text[:300]}")
-
-            # ── Extract 6-digit OTP ──
-            otp_candidate = extract_otp_from_text(mail_text, digits=6, context_words=["otp", "onemoney", "jk-onemny-s", "verification"])
-            if otp_candidate:
-                otp = otp_candidate
-                log(f"  Onemoney OTP extracted: {otp}")
-            else:
-                log("  No 6-digit OTP found in first mail — trying next mail...")
-                try:
-                    inbox_frame = yop_page.frame_locator("#ifinbox")
-                    second_mail = inbox_frame.locator("div.m, .lm").nth(1)
-                    if second_mail.is_visible(timeout=3000):
-                        second_mail.click()
-                        yop_page.wait_for_timeout(2000)
-                        if not wait_for_yopmail_captcha_clear(yop_page, "Onemoney OTP", max_wait=90):
-                            step_fail(STEP, "YOPmail CAPTCHA blocked Onemoney OTP read")
-                            return False
-                        mail_text2 = mail_frame.locator("body").inner_text()
-                        otp_candidate2 = extract_otp_from_text(mail_text2, digits=6, context_words=["otp", "onemoney", "jk-onemny-s", "verification"])
-                        if otp_candidate2:
-                            otp = otp_candidate2
-                            log(f"  Onemoney OTP from second mail: {otp}")
-                except Exception as e2:
-                    log(f"  Second mail read failed: {e2}")
-
-        except Exception as e:
-            log(f"  Yopmail tab error: {e}")
-        finally:
-            if yop_page and not yop_page.is_closed():
-                yop_page.close()
-                log("  Yopmail tab closed")
-
+        otp = fetch_latest_yopmail_otp(ctx, yopmail_user, digits=6, label="Onemoney OTP", max_wait=75)
         if not otp:
-            step_fail(STEP, "Could not fetch Onemoney OTP from YOPmail")
+            step_fail(STEP, "Onemoney OTP not received")
             return False
 
-        log(f"  Onemoney OTP fetched: {otp}")
-
-        page.wait_for_load_state("domcontentloaded", timeout=15000)
-        page.wait_for_timeout(2000)
-
-        # ── Strategy 1: enterotp0 input (matches Java: //input[@id='enterotp0']) ──
-        otp_entered = False
-        try:
-            otp_box = page.locator("xpath=//input[@id='enterotp0']").first
-            if otp_box.is_visible(timeout=5000):
-                otp_box.click()
-                otp_box.fill(otp)
-                log("  OTP entered via #enterotp0 field")
-                otp_entered = True
-        except Exception as e:
-            log(f"  enterotp0 strategy failed: {e}")
-
-        # ── Strategy 2: 6 individual editable inputs (skip readonly) ──
-        if not otp_entered:
+        entered = False
+        for selector in [
+            "css=input#enterotp0",
+            "xpath=//input[contains(@id,'otp') or contains(@name,'otp') or contains(@placeholder,'OTP')]",
+            "xpath=//input[@type='tel' or @type='number' or @type='text']",
+        ]:
             try:
-                all_inputs = page.locator("xpath=//input").all()
-                editable_inputs = []
-                for inp in all_inputs:
-                    try:
-                        if (inp.is_visible() and
-                                not inp.is_disabled() and
-                                inp.get_attribute("readonly") is None):
-                            editable_inputs.append(inp)
-                    except Exception:
-                        continue
+                loc = page.locator(selector)
+                count = min(loc.count(), 8)
+                if count >= len(otp) and selector != "css=input#enterotp0":
+                    for i, d in enumerate(otp):
+                        box = loc.nth(i)
+                        if box.is_visible(timeout=1000):
+                            box.click()
+                            box.fill(d)
+                    entered = True
+                    break
+                field = loc.first
+                if field.is_visible(timeout=3000):
+                    field.click()
+                    field.fill(otp)
+                    entered = True
+                    break
+            except Exception:
+                continue
+        if not entered:
+            step_fail(STEP, "Onemoney OTP field not found")
+            return False
 
-                log(f"  Found {len(editable_inputs)} editable inputs")
-                if len(editable_inputs) >= 6:
-                    for idx, digit in enumerate(otp[:6]):
-                        editable_inputs[idx].click()
-                        editable_inputs[idx].fill(digit)
-                        page.wait_for_timeout(150)
-                    log("  OTP entered digit by digit")
-                    otp_entered = True
-            except Exception as e:
-                log(f"  Individual input strategy failed: {e}")
-
-        # ── Strategy 3: single input field ──
-        if not otp_entered:
-            for strategy in [
-                "xpath=//input[@type='tel']",
-                "xpath=//input[@type='number']",
-                "xpath=//input[@maxlength='6']",
-                "xpath=//input[contains(@placeholder,'OTP') or contains(@placeholder,'otp')]",
-            ]:
-                try:
-                    inp = page.locator(strategy).first
-                    if inp.is_visible(timeout=3000):
-                        inp.click()
-                        inp.fill(otp)
-                        log(f"  OTP entered via: {strategy}")
-                        otp_entered = True
-                        break
-                except Exception:
-                    continue
-
-        if not otp_entered:
-            log("  WARNING: Could not enter OTP into any field")
-
-        # ── Click Login button (matches Java: //button[text()=' Login ']) ──
-        for strategy in [
-            "xpath=//button[text()=' Login ']",
-            "xpath=//button[normalize-space(text())='Login']",
-            "xpath=//button[contains(text(),'Login')]",
-            "xpath=//button[contains(translate(text(),'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'),'LOGIN')]",
+        clicked = False
+        for selector in [
+            "xpath=//button[normalize-space()='Login']",
+            "xpath=//*[self::button or @role='button'][contains(normalize-space(.),'Login')]",
             "xpath=//button[@type='submit']",
         ]:
             try:
-                btn = page.locator(strategy).first
-                if btn.is_visible(timeout=5000) and btn.is_enabled():
-                    btn.click()
-                    log(f"  Login clicked via: {strategy}")
+                btn = page.locator(selector).first
+                if btn.is_visible(timeout=3000):
+                    btn.click(force=True, timeout=3000)
+                    clicked = True
+                    log(f"  Onemoney Login clicked via: {selector}")
                     break
             except Exception:
                 continue
-
-        page.wait_for_timeout(3000)
+        if not clicked:
+            page.keyboard.press("Enter")
+            log("  Onemoney Login submitted by Enter")
+        page.wait_for_timeout(5000)
         step_pass(STEP, f"Onemoney OTP '{otp}' entered and submitted")
         return True
-
     except Exception as e:
         step_fail(STEP, str(e))
         return False
 
-
-# ─────────────────────────── Step 9: Onemoney — Choose Linked Accounts ──────
-# Matches Java: user_select_one_money_account() - selects configured account suffix, clicks Approve + Confirm
-
-# ─────────────────────────── Step 9: Onemoney — Choose Linked Accounts ──────
-
-def step_onemoney_choose_accounts(page: Page) -> bool:
-    STEP = "Onemoney - Choose Linked Accounts"
-    try:
-        target_account = str(TEST_DATA.get("onemoney_account") or "33939500923")
-        target_suffix = target_account[-4:] if len(target_account) >= 4 else "0923"
-        log(f"  Waiting for Onemoney choose accounts page; selecting account ending {target_suffix}...")
-        page.wait_for_load_state("domcontentloaded", timeout=15000)
-        page.wait_for_timeout(3000)
-
-        try:
-            select_all = page.locator(
-                "xpath=(//*[contains(normalize-space(.),'Select All')]//input[@type='checkbox'] | //input[@type='checkbox' and contains(@aria-label,'Select All')])[1]"
-            ).first
-            if select_all.is_visible(timeout=3000) and select_all.is_checked():
-                select_all.click()
-                page.wait_for_timeout(500)
-                log("  Deselected 'Select All'")
-        except Exception:
-            pass
-
-        suffix_selected = False
-        suffix_xpaths = [
-            f"xpath=(//*[contains(normalize-space(.),'{target_suffix}')]//ancestor::app-fi-small-card)[1]",
-            f"xpath=(//*[contains(normalize-space(.),'{target_suffix}')]//ancestor::*[contains(@class,'card')][1])",
-            f"xpath=(//*[contains(normalize-space(.),'{target_suffix}')]//ancestor::*[.//input[@type='checkbox']][1])",
-            f"xpath=(//*[contains(normalize-space(.),'{target_suffix}')])[1]",
-        ]
-
-        for strategy in suffix_xpaths:
-            try:
-                target = page.locator(strategy).first
-                if target.is_visible(timeout=5000):
-                    target.scroll_into_view_if_needed(timeout=2_000)
-                    target.click(force=True)
-                    log(f"  Onemoney account ending {target_suffix} clicked via: {strategy}")
-                    suffix_selected = True
-                    page.wait_for_timeout(700)
-                    break
-            except Exception:
-                continue
-
-        if not suffix_selected:
-            try:
-                suffix_selected = page.evaluate(
-                    """
-                    (suffix) => {
-                        const visible = (el) => {
-                            const rect = el.getBoundingClientRect();
-                            const style = window.getComputedStyle(el);
-                            return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
-                        };
-                        const candidates = Array.from(document.querySelectorAll('app-fi-small-card, .card, div, section, article, label'));
-                        const card = candidates.find(el => visible(el) && (el.innerText || '').includes(suffix));
-                        if (!card) return false;
-                        const checkbox = card.querySelector("input[type='checkbox']");
-                        if (checkbox && !checkbox.checked) {
-                            checkbox.click();
-                            return true;
-                        }
-                        card.click();
-                        return true;
-                    }
-                    """,
-                    target_suffix,
-                )
-                if suffix_selected:
-                    log(f"  Onemoney account ending {target_suffix} selected via DOM fallback")
-            except Exception as e:
-                log(f"  DOM fallback for account ending {target_suffix} failed: {e}")
-
-        if not suffix_selected:
-            step_fail(STEP, f"Account ending {target_suffix} not found")
-            return False
-
-        page.wait_for_timeout(1000)
-        step_pass(STEP, f"Onemoney account ending {target_suffix} selected")
-        return True
-
-    except Exception as e:
-        step_fail(STEP, str(e))
-        return False
-
-def step_onemoney_consent(page: Page) -> bool:
-    STEP = "Onemoney — Accept Consent"
-    try:
-        log("  Waiting for Onemoney Approve button...")
-        page.wait_for_load_state("domcontentloaded", timeout=15000)
-        page.wait_for_timeout(3000)
-
-        # ── Scroll down to Approve sticky footer ──
-        scroll_by(page, 500)
-        page.wait_for_timeout(1000)
-
-        try:
-            page.wait_for_selector(
-                "xpath=//div[contains(text(),'Approve')]",
-                timeout=15000,
-                state="visible"
-            )
-            log("  Approve button appeared")
-        except Exception as e:
-            log(f"  Approve wait timed out: {e}")
-
-        # ── Click Approve ──
-        approved = False
-        for strategy in [
-            "xpath=//div[normalize-space(text())='Approve']",
-            "xpath=//div[contains(text(),'Approve')]",
-            "xpath=//button[contains(text(),'Approve')]",
-            "xpath=//button[contains(@class,'approve')]",
-        ]:
-            try:
-                btn = page.locator(strategy).first
-                if btn.is_visible(timeout=5000):
-                    btn.click()
-                    log(f"  Approve clicked via: {strategy}")
-                    approved = True
-                    break
-            except Exception:
-                continue
-
-        if not approved:
-            log(f"  Approve button not found on: {page.url}")
-            step_fail(STEP, "Approve button not found")
-            return False
-
-        # ── Handle Confirm popup ──
-        page.wait_for_timeout(2000)
-        try:
-            page.wait_for_selector(
-                "xpath=//*[contains(text(),'Confirm')]",
-                timeout=10000,
-                state="visible"
-            )
-            log("  Confirm popup detected")
-
-            for strategy in [
-                "xpath=//button[normalize-space(text())='Confirm']",
-                "xpath=//button[contains(text(),'Confirm')]",
-                "xpath=//button[contains(translate(text(),'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'),'CONFIRM')]",
-            ]:
-                try:
-                    btn = page.locator(strategy).first
-                    if btn.is_visible(timeout=5000) and btn.is_enabled():
-                        btn.click()
-                        log(f"  Confirm clicked via: {strategy}")
-                        break
-                except Exception:
-                    continue
-        except Exception:
-            log("  Confirm popup not shown — skipping")
-
-        page.wait_for_timeout(3000)
-        step_pass(STEP, "Onemoney consent approved and confirmed")
-        return True
-
-    except Exception as e:
-        step_fail(STEP, str(e))
-        return False
-
-
-# ─────────────────────────── Step 11: Email Verification ────────────────────
-# Matches Java: user_click_the_mail_id() — enters email, verifies OTP from yopmail
 
 def step_email_verification(page: Page, ctx: BrowserContext) -> bool:
     STEP = "Email Verification"
     try:
         email = TEST_DATA.get("yopmail", "")
         log(f"  Email verification with: {email}")
-
         page.wait_for_load_state("domcontentloaded", timeout=15000)
         page.wait_for_timeout(2000)
 
-        # ── Check if aggregator error link appears (matches Java try/catch) ──
-        try:
-            aggregator_link = page.locator(
-                "xpath=//p[contains(text(),'Account Aggregator')]//following-sibling::a"
-            )
-            if aggregator_link.is_visible(timeout=5000):
-                aggregator_link.click()
-                log("  Aggregator fallback link clicked")
-                page.wait_for_timeout(2000)
-        except Exception:
-            log("  Aggregator is working fine — no fallback needed")
-
-        # ── Fill email input ──
         email_input = None
-        for strategy in [
+        for selector in [
             "xpath=//input[@id='email']",
             "xpath=//input[@type='email']",
-            "xpath=//input[contains(@placeholder,'email') or contains(@placeholder,'Email')]",
+            "xpath=//input[contains(translate(@placeholder,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'email')]",
+            "xpath=//input[contains(translate(@name,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'email')]",
         ]:
             try:
-                loc = page.locator(strategy).first
-                if loc.is_visible(timeout=5000):
+                loc = page.locator(selector).first
+                if loc.is_visible(timeout=4000):
                     email_input = loc
                     break
             except Exception:
                 continue
-
         if not email_input:
-            log("  Email input not found — skipping email verification")
-            step_pass(STEP, "Email input not found — skipped")
+            log("  Email input not found; email step may already be completed")
+            step_pass(STEP, "Email input not found - skipped")
             return True
 
         email_input.click()
         email_input.fill(email)
         log(f"  Email entered: {email}")
 
-        # ── Click Verify Email ──
-        for strategy in [
-            "xpath=//button[normalize-space(text())='Verify Email']",
-            "xpath=//button[contains(text(),'Verify Email')]",
-            "xpath=//button[contains(text(),'Send OTP')]",
+        for selector in [
+            "xpath=//button[contains(normalize-space(.),'Verify Email')]",
+            "xpath=//button[contains(normalize-space(.),'Send OTP')]",
+            "xpath=//*[self::button or @role='button'][contains(normalize-space(.),'Verify')]",
             "xpath=//button[@type='submit']",
         ]:
             try:
-                btn = page.locator(strategy).first
+                btn = page.locator(selector).first
                 if btn.is_visible(timeout=3000) and btn.is_enabled():
-                    btn.click()
-                    log(f"  Verify Email button clicked via: {strategy}")
+                    btn.click(force=True, timeout=3000)
+                    log(f"  Email OTP button clicked via: {selector}")
                     break
             except Exception:
                 continue
 
-        page.wait_for_timeout(18000)
-        log("  Waited 18 seconds for email OTP")
-
-        # ── Fetch OTP from yopmail ──
-        otp = None
-        yop_page = None
-        try:
-            username = email.split("@")[0]
-            yop_page = ctx.new_page()
-            yop_page.goto(
-                f"https://yopmail.com/en/?login={username}",
-                wait_until="domcontentloaded",
-                timeout=30000
-            )
-            yop_page.wait_for_timeout(5000)
-
-            try:
-                yop_page.locator("#refresh").click()
-                yop_page.wait_for_timeout(3000)
-            except Exception:
-                pass
-
-            mail_frame = yop_page.frame_locator("#ifmail")
-            if not wait_for_yopmail_captcha_clear(yop_page, "Email OTP", max_wait=90):
-                step_fail(STEP, "YOPmail CAPTCHA blocked Email OTP read")
-                return False
-            mail_frame.locator("body").wait_for(timeout=10000)
-            mail_body = mail_frame.locator("body").inner_text()
-            log(f"  Email OTP mail preview: {mail_body[:300]}")
-
-            # ── 4-digit OTP (matches Java pattern \\b\\d{4}\\b) ──
-            otp_candidate4 = extract_otp_from_text(mail_body, digits=4, context_words=["otp", "email", "verification"])
-            if otp_candidate4:
-                otp = otp_candidate4
-                log(f"  Email OTP found (4-digit): {otp}")
-            else:
-                # fallback: 6-digit
-                otp_candidate6 = extract_otp_from_text(mail_body, digits=6, context_words=["otp", "email", "verification"])
-                if otp_candidate6:
-                    otp = otp_candidate6
-                    log(f"  Email OTP found (6-digit): {otp}")
-
-        except Exception as e:
-            log(f"  Yopmail email OTP fetch error: {e}")
-        finally:
-            if yop_page and not yop_page.is_closed():
-                yop_page.close()
-
+        page.wait_for_timeout(10000)
+        otp = fetch_latest_yopmail_otp(ctx, email, digits=4, label="Email OTP", max_wait=75, strict_email=True)
         if not otp:
-            log("  Email OTP not received — continuing without verification")
-            step_pass(STEP, "OTP not received — skipped")
-            return True
+            step_fail(STEP, "Email OTP not received")
+            return False
 
-        # ── Enter OTP (matches Java: //input[@name='emailOtp']) ──
-        otp_entered = False
-        for strategy in [
-            "xpath=//input[@name='emailOtp']",
-            "xpath=//input[@name='emailotp']",
-            "xpath=//input[contains(@placeholder,'OTP') or contains(@placeholder,'otp')]",
-            "xpath=//input[@type='number']",
-            "xpath=//input[@type='tel']",
-        ]:
-            try:
-                inp = page.locator(strategy).first
-                if inp.is_visible(timeout=3000):
-                    inp.click()
-                    inp.fill(otp)
-                    log(f"  Email OTP entered via: {strategy}")
-                    otp_entered = True
-                    break
-            except Exception:
-                continue
+        if not enter_otp_value(page, otp, "Email OTP"):
+            for selector in [
+                "xpath=//input[@name='emailOtp']",
+                "xpath=//input[@name='emailotp']",
+                "xpath=//input[contains(translate(@placeholder,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'otp')]",
+                "xpath=//input[@type='number' or @type='tel' or @type='text']",
+            ]:
+                try:
+                    inp = page.locator(selector).first
+                    if inp.is_visible(timeout=3000):
+                        inp.click()
+                        inp.fill(otp)
+                        break
+                except Exception:
+                    continue
 
-        if not otp_entered:
-            log("  WARNING: Could not find email OTP input field")
-
-        # ── Click Verify (matches Java: (//button[text()='Verify'])[2]) ──
-        page.wait_for_timeout(1000)
-        for strategy in [
-            "xpath=(//button[text()='Verify'])[2]",
-            "xpath=(//button[normalize-space(text())='Verify'])[1]",
-            "xpath=//button[contains(text(),'Verify')]",
+        for selector in [
+            "xpath=(//button[normalize-space()='Verify'])[last()]",
+            "xpath=//*[self::button or @role='button'][contains(normalize-space(.),'Verify')]",
             "xpath=//button[@type='submit']",
         ]:
             try:
-                btn = page.locator(strategy).first
+                btn = page.locator(selector).first
                 if btn.is_visible(timeout=3000) and btn.is_enabled():
-                    btn.click()
-                    log(f"  Verify clicked via: {strategy}")
+                    btn.click(force=True, timeout=3000)
+                    log(f"  Email Verify clicked via: {selector}")
                     break
             except Exception:
                 continue
-
         page.wait_for_timeout(3000)
-
-        # ── Check for aggregator popup after verify ──
-        try:
-            aggregator_link2 = page.locator(
-                "xpath=//p[contains(text(),'Account Aggregator')]//following-sibling::a"
-            )
-            if aggregator_link2.is_visible(timeout=5000):
-                aggregator_link2.click()
-                log("  Post-verify aggregator link clicked")
-                page.wait_for_timeout(2000)
-        except Exception:
-            log("  No post-verify aggregator popup")
-
         step_pass(STEP, f"Email OTP '{otp}' entered")
         return True
-
     except Exception as e:
         step_fail(STEP, str(e))
         return False
-
 
 def step_personal_details(page: Page) -> bool:
     STEP = "Personal Details"
@@ -2466,69 +2280,296 @@ def step_personal_details(page: Page) -> bool:
 
 from config import TEST_FILES
 
-def step_document_upload(page: Page) -> bool:
-    STEP = "Document Upload (PAN, Signature)"
+
+
+def step_onemoney_choose_accounts(page: Page) -> bool:
+    STEP = "Onemoney - Choose Linked Accounts"
     try:
-        page.wait_for_timeout(2_000)
-
-        # ── Signature ──
-        page.wait_for_timeout(1_000)
-        try:
-            ok = False
-            upload_sign = page.locator("xpath=//button[@id='upload_sign']")
-            if upload_sign.count() > 0:
-                try:
-                    upload_sign.first.click(timeout=2_000)
-                    page.wait_for_timeout(500)
-                except Exception:
-                    log("  Signature upload button not clickable; using direct file upload")
-
-            ok = upload_file_direct(
-                page,
-                TEST_FILES["signature"],
-                "Signature",
-                [
-                    "css=input#drawimagerest",
-                    "css=input#drawimage",
-                    "css=input[name='drawimagerest']",
-                    "css=input[name='drawimage']",
-                ],
-            )
-            if not ok:
-                ok = upload_file(page, "//label[@id='drawimagerestcl']", TEST_FILES["signature"], "Signature")
-            if ok:
-                page.wait_for_timeout(2_000)
-                click_use_original_for_signature(page)
-                page.wait_for_timeout(2_000)
-        except Exception as e:
-            log(f"  Signature upload step issue: {e}")
-
-        # ── Financial Statement (auto-fetched check) ──
-        try:
-            fin_container = page.locator("xpath=//span[@id='select2-finproof-container']")
-            if fin_container.is_visible(timeout=5_000):
-                fin_text = fin_container.inner_text()
-                if "6 Month Bank Statement" in fin_text:
-                    log("  6-month financial statement auto-fetched ✅")
-                    try:
-                        view_btn2 = page.locator("xpath=(//button[text()='View'])[1]")
-                        view_btn2.dispatch_event("click")
-                        page.wait_for_timeout(2_000)
-                        scroll_open_viewer_to_bottom(page, "Financial statement")
-                        close_visible_dialog(page, "Financial statement")
-                        page.locator("xpath=(//span[text()='×']//parent::button)[1]").dispatch_event("click")
-                        page.wait_for_timeout(1_000)
-                    except Exception:
-                        pass
-        except Exception:
-            pass
-
-        step_pass(STEP)
+        page.wait_for_load_state("domcontentloaded", timeout=15000)
+        page.wait_for_timeout(1500)
+        log("  Onemoney bank account is already auto-selected; leaving it unchanged")
+        step_pass(STEP, "Auto-selected bank left unchanged")
         return True
-
     except Exception as e:
         step_fail(STEP, str(e))
         return False
+
+
+def step_onemoney_consent(page: Page) -> bool:
+    STEP = "Onemoney - Consent Approval"
+    try:
+        page.wait_for_load_state("domcontentloaded", timeout=15000)
+        page.wait_for_timeout(1500)
+
+        # Bank is already selected by Onemoney. Do not touch the checkbox.
+        log("  Onemoney consent page: bank selection left unchanged")
+
+        approve_clicked = False
+        deadline = time.time() + 45
+        while time.time() < deadline and not approve_clicked:
+            try:
+                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                page.wait_for_timeout(700)
+            except Exception:
+                pass
+
+            for selector in [
+                "xpath=(//*[self::button or @role='button' or self::a][normalize-space()='Approve'])[last()]",
+                "xpath=(//*[self::button or @role='button' or self::a][contains(normalize-space(.),'Approve')])[last()]",
+                "xpath=(//button[contains(translate(normalize-space(.),'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'),'APPROVE')])[last()]",
+            ]:
+                try:
+                    btn = page.locator(selector).first
+                    if btn.count() > 0:
+                        btn.scroll_into_view_if_needed(timeout=2000)
+                        btn.click(force=True, timeout=3000)
+                        approve_clicked = True
+                        log(f"  Onemoney Approve clicked via: {selector}")
+                        break
+                except Exception:
+                    continue
+
+            if approve_clicked:
+                break
+
+            try:
+                result = page.evaluate("""
+                () => {
+                    const visible = el => {
+                        const r = el.getBoundingClientRect();
+                        const s = getComputedStyle(el);
+                        return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
+                    };
+                    window.scrollTo(0, document.body.scrollHeight);
+                    const items = [...document.querySelectorAll('button,a,[role=button],div')];
+                    const el = items.reverse().find(x => visible(x) && /approve/i.test((x.innerText || x.value || '').trim()));
+                    if (!el) return {ok:false, reason:'approve not found'};
+                    el.scrollIntoView({block:'center', inline:'center'});
+                    const r = el.getBoundingClientRect();
+                    el.dispatchEvent(new MouseEvent('mouseover', {bubbles:true, clientX:r.left+r.width/2, clientY:r.top+r.height/2}));
+                    el.dispatchEvent(new MouseEvent('mousedown', {bubbles:true, clientX:r.left+r.width/2, clientY:r.top+r.height/2}));
+                    el.dispatchEvent(new MouseEvent('mouseup', {bubbles:true, clientX:r.left+r.width/2, clientY:r.top+r.height/2}));
+                    el.click();
+                    return {ok:true, text:(el.innerText || el.value || '').trim(), tag:el.tagName};
+                }
+                """)
+                if result and result.get('ok'):
+                    approve_clicked = True
+                    log(f"  Onemoney Approve clicked via JS: {result}")
+                    break
+            except Exception:
+                pass
+            page.wait_for_timeout(1000)
+
+        if not approve_clicked:
+            step_fail(STEP, f"Approve button not found; url={page.url}")
+            return False
+
+        page.wait_for_timeout(1500)
+        for selector in [
+            "xpath=//*[contains(normalize-space(.),'You are just one step away')]/following::*[self::button or @role='button'][normalize-space()='Confirm'][1]",
+            "xpath=(//*[self::button or @role='button'][normalize-space()='Confirm'])[last()]",
+            "xpath=(//*[self::button or @role='button'][contains(normalize-space(.),'Confirm')])[last()]",
+        ]:
+            try:
+                confirm = page.locator(selector).first
+                if confirm.is_visible(timeout=7000):
+                    confirm.scroll_into_view_if_needed(timeout=2000)
+                    confirm.click(force=True, timeout=3000)
+                    log(f"  Onemoney Confirm clicked via: {selector}")
+                    page.wait_for_timeout(5000)
+                    break
+            except Exception:
+                continue
+        step_pass(STEP, "Approve/Confirm handled")
+        return True
+    except Exception as e:
+        step_fail(STEP, str(e))
+        return False
+
+def click_use_original_near_latest_upload(page: Page, label: str) -> bool:
+    """Click the crop modal Use Original button. Navia uses data-key='orgi'."""
+    selectors = [
+        "css=button[data-key='orgi']",
+        "xpath=//button[@data-key='orgi']",
+        "xpath=//button[contains(@class,'cancle-crop-box') and @data-key='orgi']",
+        "xpath=//*[contains(@class,'save_box')]//button[@data-key='orgi']",
+        "xpath=(//*[self::button or self::a or @role='button'][normalize-space()='Use Original'])[last()]",
+        "xpath=(//*[self::button or self::a or @role='button'][contains(normalize-space(.),'Use Original')])[last()]",
+        "xpath=(//*[self::button or self::a or @role='button'][contains(normalize-space(.),'Use Orginal')])[last()]",
+    ]
+    deadline = time.time() + 25
+    last_error = None
+    while time.time() < deadline:
+        for selector in selectors:
+            try:
+                btn = page.locator(selector).first
+                btn.wait_for(state="visible", timeout=1000)
+                btn.scroll_into_view_if_needed(timeout=2000)
+                try:
+                    btn.click(timeout=3000)
+                except Exception:
+                    btn.click(force=True, timeout=3000)
+                log(f"  Use Original clicked for {label} via {selector}")
+                page.wait_for_timeout(2500)
+                return True
+            except Exception as exc:
+                last_error = exc
+        try:
+            result = page.evaluate("""
+            () => {
+                const visible = el => {
+                    const r = el.getBoundingClientRect();
+                    const s = getComputedStyle(el);
+                    return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
+                };
+                const btn = document.querySelector("button[data-key='orgi']") ||
+                    [...document.querySelectorAll('button,a,[role=button]')]
+                    .reverse().find(el => visible(el) && /use\s+original|use\s+orginal/i.test((el.innerText || el.value || '').trim()));
+                if (!btn || !visible(btn)) return {ok:false};
+                btn.scrollIntoView({block:'center', inline:'center'});
+                const r = btn.getBoundingClientRect();
+                for (const type of ['pointerdown','mousedown','pointerup','mouseup','click']) {
+                    btn.dispatchEvent(new MouseEvent(type, {bubbles:true, cancelable:true, view:window, clientX:r.left+r.width/2, clientY:r.top+r.height/2}));
+                }
+                btn.click();
+                return {ok:true, text:(btn.innerText || btn.value || '').trim(), dataKey:btn.getAttribute('data-key')};
+            }
+            """)
+            if result and result.get('ok'):
+                log(f"  Use Original clicked for {label} via JS: {result}")
+                page.wait_for_timeout(2500)
+                return True
+        except Exception as exc:
+            last_error = exc
+        page.wait_for_timeout(700)
+    log(f"  Use Original not clicked for {label}; last_error={last_error}")
+    return False
+
+
+def select_document_dropdown(page: Page, field_label: str, option_words: list[str]) -> bool:
+    words = [w.upper() for w in option_words]
+    dropdown_selectors = [
+        f"xpath=(//*[contains(translate(normalize-space(.),'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'),'{field_label.upper()}')]/following::*[contains(@class,'select2') or @role='combobox' or contains(normalize-space(.),'Please Select') or contains(normalize-space(.),'Please select')][1])[1]",
+    ]
+    for selector in dropdown_selectors:
+        try:
+            dd = page.locator(selector).first
+            dd.wait_for(state="visible", timeout=4000)
+            dd.scroll_into_view_if_needed(timeout=2000)
+            dd.click(force=True, timeout=3000)
+            page.wait_for_timeout(800)
+            for word in words:
+                opt = page.locator(f"xpath=(//*[contains(translate(normalize-space(.),'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'),'{word}')])[last()]").first
+                if opt.is_visible(timeout=2000):
+                    opt.click(force=True, timeout=3000)
+                    log(f"  {field_label} dropdown selected: {word}")
+                    page.wait_for_timeout(800)
+                    return True
+        except Exception:
+            continue
+    log(f"  {field_label} dropdown selection not found")
+    return False
+
+
+def upload_document_section(page: Page, section_label: str, file_key: str, option_words: list[str]) -> bool:
+    select_document_dropdown(page, section_label, option_words)
+    file_path = TEST_FILES.get(file_key, file_key)
+    if not os.path.isabs(file_path):
+        file_path = os.path.join(r"C:\Users\Miruthula\Desktop\ekyc-automation", file_path)
+    if not os.path.exists(file_path):
+        log(f"  File not found for {section_label}: {file_path}")
+        return False
+
+    upload_selectors = [
+        f"xpath=(//*[contains(translate(normalize-space(.),'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'),'{section_label.upper()}')]/following::*[self::button or self::label or @role='button'][contains(translate(normalize-space(.),'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'),'UPLOAD')][1])[1]",
+        "xpath=(//*[self::button or self::label or @role='button'][contains(translate(normalize-space(.),'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'),'UPLOAD')])[last()]",
+    ]
+    for selector in upload_selectors:
+        try:
+            trigger = page.locator(selector).first
+            trigger.wait_for(state="visible", timeout=4000)
+            trigger.scroll_into_view_if_needed(timeout=2000)
+            with page.expect_file_chooser(timeout=7000) as fc_info:
+                trigger.click(force=True, timeout=3000)
+            fc_info.value.set_files(file_path)
+            log(f"  {section_label} uploaded: {os.path.basename(file_path)}")
+            page.wait_for_timeout(2500)
+            click_use_original_near_latest_upload(page, section_label)
+            return True
+        except Exception:
+            continue
+
+    ok = upload_file_direct(page, file_path, section_label, [
+        f"xpath=(//*[contains(translate(normalize-space(.),'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'),'{section_label.upper()}')]/following::input[@type='file'][1])[1]",
+        "css=input[type='file']",
+    ])
+    if ok:
+        page.wait_for_timeout(2500)
+        click_use_original_near_latest_upload(page, section_label)
+    return ok
+
+
+def aa_statement_already_fetched(page: Page) -> bool:
+    try:
+        body = page.locator("body").inner_text(timeout=3000).lower()
+        if any(x in body for x in ["please upload bank proof", "please select proof", "please upload statements", "please select statement"]):
+            return False
+        return any(x in body for x in ["6 month bank statement", "statement fetched", "account aggregator statement"])
+    except Exception:
+        return False
+
+
+def document_manual_required(page: Page) -> bool:
+    try:
+        body = page.locator("body").inner_text(timeout=3000).lower()
+        return any(x in body for x in [
+            "please upload bank proof", "please select proof", "please upload statements", "please select statement",
+            "bank proof *", "financial statements*", "financial statements *"
+        ])
+    except Exception:
+        return True
+
+
+def step_document_upload(page: Page) -> bool:
+    STEP = "Document Upload (Bank Proof, Signature, Financial Statement)"
+    try:
+        page.wait_for_load_state("domcontentloaded", timeout=15000)
+        page.wait_for_timeout(2000)
+
+        manual_needed = document_manual_required(page)
+        if manual_needed:
+            log("  AA statement not available; uploading Bank Proof before Signature")
+            upload_document_section(page, "Bank Proof", "signature", ["Latest 3 Month Bank Statement", "Bank Statement", "ITR", "Salary Slip"])
+        else:
+            log("  AA statement fetched; bank/financial manual upload not required")
+
+        # Signature upload and mandatory Use Original click.
+        log("  Uploading Signature and clicking Use Original")
+        sig_ok = upload_document_section(page, "Signature", "signature", ["Signature"])
+        if not sig_ok:
+            sig_ok = upload_file_direct(page, TEST_FILES["signature"], "Signature", [
+                "css=input#drawimagerest",
+                "css=input#drawimage",
+                "css=input[name='drawimagerest']",
+                "css=input[name='drawimage']",
+                "xpath=(//*[contains(translate(normalize-space(.),'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'),'SIGNATURE')]/following::input[@type='file'][1])[1]",
+            ])
+            if sig_ok:
+                page.wait_for_timeout(2500)
+                click_use_original_near_latest_upload(page, "Signature")
+
+        # If AA did not fetch statement, upload financial proof after signature.
+        if manual_needed:
+            log("  Uploading Financial Statement after Signature")
+            upload_document_section(page, "Financial Statements", "signature", ["Salary Slip", "Bank Statement", "ITR", "Latest 3 Month"])
+
+        step_pass(STEP)
+        return True
+    except Exception as e:
+        step_fail(STEP, str(e))
+        return False
+
 
 # ─────────────────────────── Step 14: Proceed to Nominees / Next ─────────────
 
@@ -3467,10 +3508,13 @@ def run_ekyc_test() -> str:
     overall_status = "FAIL"
 
     with sync_playwright() as pw:
+        profile_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chrome_profile_navia")
+        os.makedirs(profile_dir, exist_ok=True)
         browser = pw.chromium.launch(
             headless=False,
             args=[
                 "--start-maximized",
+                "--disable-blink-features=AutomationControlled",
                 "--use-fake-ui-for-media-stream",
                 "--allow-file-access-from-files",
             ],
@@ -3576,7 +3620,7 @@ def run_ekyc_test() -> str:
                 log("  Onemoney login step failed — continuing")
 
             # ── Step 8: Onemoney — Enter OTP ────────────────────────────────
-            if not step_onemoney_otp(page, ctx, "naviatestingekyc@yopmail.com"):
+            if not step_onemoney_otp(page, ctx, TEST_DATA["yopmail"]):
                 log("  Onemoney OTP verification failed — continuing")
 
             # ── Step 9: Onemoney — Choose Accounts ──────────────────────────
