@@ -958,9 +958,12 @@ def click_continue_after_mobile_for_ipv(page: Page, timeout: int = 120_000) -> b
                     btn.click(force=True, timeout=3_000)
                     log("  Continue clicked after mobile verification")
                     try:
-                        page.wait_for_url("**/uuid.php**", timeout=60_000)
+                        page.wait_for_url("**/photo_capturing.php**", timeout=60_000)
                     except Exception:
-                        page.wait_for_timeout(2_000)
+                        try:
+                            page.wait_for_url("**/uuid.php**", timeout=10_000)
+                        except Exception:
+                            page.wait_for_timeout(2_000)
                     step_pass(STEP)
                     return True
             except Exception:
@@ -1805,6 +1808,83 @@ def step_account_aggregator(page: Page) -> bool:
 # ─────────────────────────── Step 7: Onemoney — Login ───────────────────────
 # Matches Java: user_select_the_one_money_otp() — clicks Send OTP
 
+def dismiss_account_aggregator_failure_popup(page: Page) -> bool:
+    ok_selectors = [
+        "xpath=(//*[self::button or self::a or @role='button'][normalize-space()='OK' or normalize-space()='Ok' or normalize-space()='okay' or normalize-space()='Okay'])[last()]",
+        "xpath=(//*[self::button or self::a or @role='button'][contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'ok')])[last()]",
+        "xpath=(//*[contains(@class,'modal') or contains(@class,'swal') or contains(@class,'popup')]//*[self::button or self::a or @role='button'])[last()]",
+        "xpath=(//button[contains(@class,'confirm') or contains(@class,'swal')])[last()]",
+    ]
+    popup_terms = [
+        "account aggregator",
+        "bank verification",
+        "didn't go through",
+        "didnt go through",
+        "no worries",
+        "upload physical documents",
+    ]
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        try:
+            body_text = page.locator("body").inner_text(timeout=1_000).lower()
+            if not any(term in body_text for term in popup_terms):
+                page.wait_for_timeout(500)
+                continue
+        except Exception:
+            page.wait_for_timeout(500)
+            continue
+
+        for selector in ok_selectors:
+            try:
+                ok_btn = page.locator(selector).last
+                if ok_btn.count() > 0 and ok_btn.is_visible(timeout=1_500):
+                    ok_btn.scroll_into_view_if_needed(timeout=2_000)
+                    ok_btn.click(force=True, timeout=3_000)
+                    log("  Account Aggregator failure popup OK clicked")
+                    page.wait_for_timeout(1_000)
+                    return True
+            except Exception:
+                continue
+
+        try:
+            result = page.evaluate("""
+            () => {
+                const visible = el => {
+                    const r = el.getBoundingClientRect();
+                    const s = getComputedStyle(el);
+                    return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
+                };
+                const buttons = [...document.querySelectorAll('button,a,[role=button],input[type=button],input[type=submit]')]
+                    .filter(visible)
+                    .filter(el => /^(ok|okay)$/i.test(((el.innerText || el.value || '').trim())));
+                const btn = buttons[buttons.length - 1];
+                if (!btn) return {ok:false};
+                btn.scrollIntoView({block:'center', inline:'center'});
+                const r = btn.getBoundingClientRect();
+                for (const type of ['pointerdown','mousedown','pointerup','mouseup','click']) {
+                    btn.dispatchEvent(new MouseEvent(type, {bubbles:true, cancelable:true, view:window, clientX:r.left+r.width/2, clientY:r.top+r.height/2}));
+                }
+                btn.click();
+                return {ok:true, text:(btn.innerText || btn.value || '').trim()};
+            }
+            """)
+            if result and result.get("ok"):
+                log(f"  Account Aggregator failure popup OK clicked via JS: {result}")
+                page.wait_for_timeout(1_000)
+                return True
+        except Exception:
+            pass
+
+        try:
+            page.keyboard.press("Enter")
+            log("  Account Aggregator failure popup dismissed by Enter")
+            page.wait_for_timeout(1_000)
+            return True
+        except Exception:
+            page.wait_for_timeout(500)
+    return False
+
+
 def step_onemoney_login(page: Page) -> bool:
     STEP = "Onemoney — Login"
     try:
@@ -2062,19 +2142,57 @@ def step_email_verification(page: Page, ctx: BrowserContext) -> bool:
                 except Exception:
                     continue
 
+        verify_clicked = False
         for selector in [
+            "xpath=(//*[self::button or self::a or @role='button'][contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'verify') and not(contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'email'))])[last()]",
             "xpath=(//button[normalize-space()='Verify'])[last()]",
             "xpath=//*[self::button or @role='button'][contains(normalize-space(.),'Verify')]",
             "xpath=//button[@type='submit']",
+            "xpath=(//*[self::button or self::a or @role='button'][contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'submit')])[last()]",
+            "xpath=(//*[self::button or self::a or @role='button'][contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'continue')])[last()]",
         ]:
             try:
-                btn = page.locator(selector).first
-                if btn.is_visible(timeout=3000) and btn.is_enabled():
+                btn = page.locator(selector).last
+                if btn.count() > 0 and btn.is_visible(timeout=3000) and btn.is_enabled():
+                    btn.scroll_into_view_if_needed(timeout=2_000)
                     btn.click(force=True, timeout=3000)
                     log(f"  Email Verify clicked via: {selector}")
+                    verify_clicked = True
                     break
             except Exception:
                 continue
+
+        if not verify_clicked:
+            try:
+                result = page.evaluate(
+                    """() => {
+                        const visible = el => {
+                            const r = el.getBoundingClientRect();
+                            const s = getComputedStyle(el);
+                            return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
+                        };
+                        const candidates = [...document.querySelectorAll('button,a,[role=button],input[type=submit],input[type=button]')]
+                            .filter(visible)
+                            .filter(el => /verify|submit|continue/i.test((el.innerText || el.value || '').trim()));
+                        const btn = candidates[candidates.length - 1];
+                        if (!btn) return {ok:false};
+                        btn.scrollIntoView({block:'center', inline:'center'});
+                        btn.click();
+                        return {ok:true, text:(btn.innerText || btn.value || '').trim()};
+                    }"""
+                )
+                if result and result.get("ok"):
+                    verify_clicked = True
+                    log(f"  Email Verify clicked via JS: {result}")
+            except Exception:
+                pass
+
+        if not verify_clicked:
+            try:
+                page.keyboard.press("Enter")
+                log("  Email Verify submitted by Enter")
+            except Exception:
+                pass
         page.wait_for_timeout(3000)
         step_pass(STEP, f"Email OTP '{otp}' entered")
         return True
@@ -2084,6 +2202,7 @@ def step_email_verification(page: Page, ctx: BrowserContext) -> bool:
 
 def step_personal_details(page: Page) -> bool:
     STEP = "Personal Details"
+    dismiss_account_aggregator_failure_popup(page)
 
     def click_text_button(text: str, index: int = 0, timeout: int = 1_500) -> bool:
         locators = [
@@ -2398,12 +2517,42 @@ def click_use_original_near_latest_upload(page: Page, label: str) -> bool:
         "xpath=(//*[self::button or self::a or @role='button'][contains(normalize-space(.),'Use Original')])[last()]",
         "xpath=(//*[self::button or self::a or @role='button'][contains(normalize-space(.),'Use Orginal')])[last()]",
     ]
-    deadline = time.time() + 25
+    deadline = time.time() + (35 if label.lower() == "bank proof" else 25)
     last_error = None
     while time.time() < deadline:
+        try:
+            result = page.evaluate("""
+            () => {
+                const visible = el => {
+                    const r = el.getBoundingClientRect();
+                    const s = getComputedStyle(el);
+                    return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden' && Number(s.opacity || 1) !== 0;
+                };
+                const textOf = el => ((el.innerText || el.value || el.getAttribute('aria-label') || '').trim());
+                const buttons = [...document.querySelectorAll("button[data-key='orgi'],button,a,[role=button],input[type=button],input[type=submit]")]
+                    .filter(visible)
+                    .filter(el => el.getAttribute('data-key') === 'orgi' || /use\\s+original|use\\s+orginal/i.test(textOf(el)));
+                const btn = buttons[buttons.length - 1];
+                if (!btn) return {ok:false, reason:'visible Use Original not found'};
+                btn.scrollIntoView({block:'center', inline:'center'});
+                const r = btn.getBoundingClientRect();
+                for (const type of ['pointerdown','mousedown','pointerup','mouseup','click']) {
+                    btn.dispatchEvent(new MouseEvent(type, {bubbles:true, cancelable:true, view:window, clientX:r.left+r.width/2, clientY:r.top+r.height/2}));
+                }
+                btn.click();
+                return {ok:true, text:textOf(btn), dataKey:btn.getAttribute('data-key')};
+            }
+            """)
+            if result and result.get('ok'):
+                log(f"  Use Original clicked for {label} via visible modal JS: {result}")
+                page.wait_for_timeout(2500)
+                return True
+        except Exception as exc:
+            last_error = exc
+
         for selector in selectors:
             try:
-                btn = page.locator(selector).first
+                btn = page.locator(selector).last
                 btn.wait_for(state="visible", timeout=1000)
                 btn.scroll_into_view_if_needed(timeout=2000)
                 try:
@@ -2421,11 +2570,13 @@ def click_use_original_near_latest_upload(page: Page, label: str) -> bool:
                 const visible = el => {
                     const r = el.getBoundingClientRect();
                     const s = getComputedStyle(el);
-                    return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
+                    return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden' && Number(s.opacity || 1) !== 0;
                 };
-                const btn = document.querySelector("button[data-key='orgi']") ||
-                    [...document.querySelectorAll('button,a,[role=button]')]
-                    .reverse().find(el => visible(el) && /use\s+original|use\s+orginal/i.test((el.innerText || el.value || '').trim()));
+                const textOf = el => ((el.innerText || el.value || el.getAttribute('aria-label') || '').trim());
+                const btn = [...document.querySelectorAll("button[data-key='orgi'],button,a,[role=button],input[type=button],input[type=submit]")]
+                    .filter(visible)
+                    .reverse()
+                    .find(el => el.getAttribute('data-key') === 'orgi' || /use\\s+original|use\\s+orginal/i.test(textOf(el)));
                 if (!btn || !visible(btn)) return {ok:false};
                 btn.scrollIntoView({block:'center', inline:'center'});
                 const r = btn.getBoundingClientRect();
@@ -2433,7 +2584,7 @@ def click_use_original_near_latest_upload(page: Page, label: str) -> bool:
                     btn.dispatchEvent(new MouseEvent(type, {bubbles:true, cancelable:true, view:window, clientX:r.left+r.width/2, clientY:r.top+r.height/2}));
                 }
                 btn.click();
-                return {ok:true, text:(btn.innerText || btn.value || '').trim(), dataKey:btn.getAttribute('data-key')};
+                return {ok:true, text:textOf(btn), dataKey:btn.getAttribute('data-key')};
             }
             """)
             if result and result.get('ok'):
@@ -2495,7 +2646,12 @@ def upload_document_section(page: Page, section_label: str, file_key: str, optio
             fc_info.value.set_files(file_path)
             log(f"  {section_label} uploaded: {os.path.basename(file_path)}")
             page.wait_for_timeout(2500)
-            click_use_original_near_latest_upload(page, section_label)
+            use_original_ok = click_use_original_near_latest_upload(page, section_label)
+            if section_label.lower() == "bank proof" and not use_original_ok:
+                page.wait_for_timeout(2500)
+                use_original_ok = click_use_original_near_latest_upload(page, section_label)
+            if section_label.lower() == "bank proof" and not use_original_ok:
+                log("  Bank Proof Use Original was not clicked after upload")
             return True
         except Exception:
             continue
@@ -2506,7 +2662,12 @@ def upload_document_section(page: Page, section_label: str, file_key: str, optio
     ])
     if ok:
         page.wait_for_timeout(2500)
-        click_use_original_near_latest_upload(page, section_label)
+        use_original_ok = click_use_original_near_latest_upload(page, section_label)
+        if section_label.lower() == "bank proof" and not use_original_ok:
+            page.wait_for_timeout(2500)
+            use_original_ok = click_use_original_near_latest_upload(page, section_label)
+        if section_label.lower() == "bank proof" and not use_original_ok:
+            log("  Bank Proof Use Original was not clicked after direct upload")
     return ok
 
 
@@ -2831,35 +2992,51 @@ def inject_fake_camera_with_blink(page):
     (() => {{
         const OPEN_IMG = 'data:image/jpeg;base64,{open_b64}';
         const CLOSED_IMG = 'data:image/jpeg;base64,{closed_b64}';
-        const OPEN_MS = 900;
-        const CLOSED_MS = 700;
+        const OPEN_MS = 1600;
+        const CLOSED_MS = 180;
         const canvas = document.createElement('canvas');
-        canvas.width = 1280;
-        canvas.height = 720;
+        canvas.width = 640;
+        canvas.height = 480;
         const ctx = canvas.getContext('2d', {{ willReadFrequently: true }});
+        ctx.imageSmoothingEnabled = false;
         const openImg = new Image();
         const closedImg = new Image();
         openImg.src = OPEN_IMG;
         closedImg.src = CLOSED_IMG;
         let currentImg = openImg;
+        window.__ipvCameraAdjust = Object.assign(
+            {{ targetScale: 0.75, offsetY: 0, brightness: 0.96, contrast: 1.32 }},
+            window.__ipvCameraAdjust || {{}}
+        );
 
         function drawCameraFrame(img) {{
-            ctx.fillStyle = '#f2f2f2';
+            ctx.filter = 'none';
+            ctx.fillStyle = '#dddddd';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
             if (!img.complete || img.naturalWidth === 0) return;
 
-            const boxSize = Math.round(canvas.height * 0.62);
-            const boxX = Math.round((canvas.width - boxSize) / 2);
-            const boxY = Math.round((canvas.height - boxSize) / 2);
-            ctx.fillStyle = '#eeeeee';
-            ctx.fillRect(boxX, boxY, boxSize, boxSize);
+            // Keep the face centered inside the IPV circle.
+            const circleSize = Math.round(canvas.height * 0.78);
+            const circleX = Math.round((canvas.width - circleSize) / 2);
+            const circleY = Math.round((canvas.height - circleSize) / 2);
 
-            const scale = Math.min(boxSize / img.naturalWidth, boxSize / img.naturalHeight);
-            const width = img.naturalWidth * scale;
-            const height = img.naturalHeight * scale;
-            const x = boxX + (boxSize - width) / 2;
-            const y = boxY + (boxSize - height) / 2;
-            ctx.drawImage(img, x, y, width, height);
+            ctx.fillStyle = '#d7d7d7';
+            ctx.fillRect(circleX, circleY, circleSize, circleSize);
+
+            const adjust = window.__ipvCameraAdjust || {{}};
+            const targetScale = Math.max(0.62, Math.min(0.82, adjust.targetScale || 0.75));
+            const targetSize = Math.min(360, Math.round(circleSize * targetScale));
+            const destX = circleX + Math.round((circleSize - targetSize) / 2);
+            const destY = circleY + Math.round((circleSize - targetSize) / 2) + Math.round(adjust.offsetY || 0);
+
+            // Use the same centered crop and destination for both blink frames
+            // so the face stays steady while only the eyes change.
+            const srcSize = Math.min(img.naturalWidth, img.naturalHeight);
+            const srcX = Math.round((img.naturalWidth - srcSize) / 2);
+            const srcY = Math.round((img.naturalHeight - srcSize) / 2);
+            ctx.filter = `brightness(${{adjust.brightness || 0.94}}) contrast(${{adjust.contrast || 1.22}}) saturate(1.06)`;
+            ctx.drawImage(img, srcX, srcY, srcSize, srcSize, destX, destY, targetSize, targetSize);
+            ctx.filter = 'none';
         }}
 
         function drawLoop() {{
@@ -2877,7 +3054,7 @@ def inject_fake_camera_with_blink(page):
 
         const install = () => {{
             drawLoop();
-            setTimeout(blinkLoop, 700);
+            setTimeout(blinkLoop, 1200);
             navigator.mediaDevices.getUserMedia = async (constraints) => {{
                 if (constraints && constraints.video) {{
                     return canvas.captureStream(30);
@@ -3050,6 +3227,7 @@ def step_ipv_capture(page: Page) -> bool:
     STEP = "IPV Camera Capture"
     try:
         inject_fixed_geolocation(page)
+        inject_fake_camera_with_blink(page)
         accept_ipv_camera_consent(page, timeout=5_000)
         try:
             if page.locator("xpath=//*[contains(normalize-space(.),'Kindly enable your Location')]").is_visible(timeout=3_000):
@@ -3175,10 +3353,76 @@ def step_ipv_capture(page: Page) -> bool:
         else:
             log("  IPV ready/yellow box was not detected; continuing without that precondition")
 
-        deadline = time.time() + 60
+        proceed_selectors = [
+            "xpath=//*[@id='btn-upload1']",
+            "xpath=//button[contains(normalize-space(.),'proceed to E-sign')]",
+            "xpath=//button[contains(normalize-space(.),'Proceed to E-sign')]",
+            "xpath=//button[contains(normalize-space(.),'proceed to E-Sign')]",
+            "xpath=//button[contains(normalize-space(.),'Proceed to E-Sign')]",
+            "xpath=//a[contains(normalize-space(.),'proceed to E-sign')]",
+            "xpath=//a[contains(normalize-space(.),'Proceed to E-sign')]",
+            "xpath=//a[contains(normalize-space(.),'proceed to E-Sign')]",
+            "xpath=//a[contains(normalize-space(.),'Proceed to E-Sign')]",
+        ]
+
+        def click_photo_proceed_button() -> bool:
+            for selector in proceed_selectors:
+                try:
+                    btn = page.locator(selector).first
+                    if btn.count() > 0 and btn.is_visible(timeout=500):
+                        btn.scroll_into_view_if_needed(timeout=3_000)
+                        btn.click(force=True, timeout=5_000)
+                        log("  IPV photo captured; clicked proceed to E-sign")
+                        return True
+                except Exception:
+                    continue
+            return False
+
+        last_ipv_hint = ""
+
+        def adapt_fake_camera_to_ipv_hint() -> None:
+            nonlocal last_ipv_hint
+            try:
+                hint = page.evaluate(
+                    """() => Array.from(document.querySelectorAll('body *'))
+                        .map(el => (el.innerText || '').trim())
+                        .filter(Boolean)
+                        .join(' ')
+                        .toLowerCase()"""
+                )
+                if not hint or hint == last_ipv_hint:
+                    return
+                last_ipv_hint = hint
+
+                if "too close" in hint or "move slightly back" in hint or "move back" in hint:
+                    page.evaluate(
+                        """() => { window.__ipvCameraAdjust = Object.assign(window.__ipvCameraAdjust || {}, { targetScale: 0.70, brightness: 0.95, contrast: 1.24 }); }"""
+                    )
+                    log("  IPV hint detected: face too close; reducing fake camera face size")
+                elif "too far" in hint or "move closer" in hint:
+                    page.evaluate(
+                        """() => { window.__ipvCameraAdjust = Object.assign(window.__ipvCameraAdjust || {}, { targetScale: 0.80, brightness: 0.96, contrast: 1.28 }); }"""
+                    )
+                    log("  IPV hint detected: face too far; increasing fake camera face size")
+                elif "bright light" in hint or "reduce bright" in hint:
+                    page.evaluate(
+                        """() => { window.__ipvCameraAdjust = Object.assign(window.__ipvCameraAdjust || {}, { brightness: 0.86, contrast: 1.12 }); }"""
+                    )
+                    log("  IPV hint detected: bright light; reducing fake camera brightness")
+                elif "blurry" in hint or "hold camera steady" in hint or "hold still" in hint:
+                    page.evaluate(
+                        """() => { window.__ipvCameraAdjust = Object.assign(window.__ipvCameraAdjust || {}, { targetScale: 0.76, brightness: 0.96, contrast: 1.42 }); }"""
+                    )
+                    log("  IPV hint detected: blur/steady; sharpening fake camera feed")
+            except Exception:
+                pass
+
+        deadline = time.time() + 90
         while time.time() < deadline:
             try:
-                next_step = page.locator(
+                adapt_fake_camera_to_ipv_hint()
+
+                captured_state = page.locator(
                     "xpath=//*[contains(normalize-space(.),'View Unsigned KYC PDF') or "
                     "contains(normalize-space(.),'Unsigned KYC PDF') or "
                     "contains(normalize-space(.),'proceed to E-sign') or "
@@ -3189,16 +3433,37 @@ def step_ipv_capture(page: Page) -> bool:
                     "contains(normalize-space(.),'Captured') or "
                     "contains(normalize-space(.),'Verified')]"
                 )
-                if "photo_capturing" not in page.url.lower() or (next_step.count() > 0 and next_step.first.is_visible(timeout=500)):
-                    log("  IPV photo auto-captured; moved to next step")
+
+                if click_photo_proceed_button():
+                    try:
+                        page.wait_for_load_state("domcontentloaded", timeout=15_000)
+                    except Exception:
+                        pass
+
+                next_page = page.locator(
+                    "xpath=//*[contains(normalize-space(.),'Your KYC is generating') or "
+                    "contains(normalize-space(.),'Continue to E-sign') or "
+                    "contains(normalize-space(.),'View Unsigned KYC PDF') or "
+                    "contains(normalize-space(.),'Unsigned KYC PDF') or "
+                    "contains(normalize-space(.),'Proceed to E-sign')]"
+                )
+
+                current_url = page.url.lower()
+                if "uuid.php" in current_url or "proteantech.in" in current_url or (
+                    "photo_capturing" not in current_url and next_page.count() > 0 and next_page.first.is_visible(timeout=500)
+                ):
+                    log("  IPV photo captured and E-sign page loaded")
                     step_pass(STEP)
                     return True
+
+                if captured_state.count() > 0 and captured_state.first.is_visible(timeout=500):
+                    log("  IPV photo captured; waiting for proceed to E-sign action/page load")
             except Exception:
                 pass
 
             page.wait_for_timeout(1_000)
 
-        step_fail(STEP, "IPV auto-capture did not complete within 60 seconds")
+        step_fail(STEP, "IPV photo capture/proceed to E-sign did not complete within 90 seconds")
         return False
 
     except Exception as e:
@@ -3569,9 +3834,12 @@ def run_ekyc_test() -> str:
 
             # ── Step 3: Aadhaar Verification (DigiLocker) ───────────────────
             if RUN_IPV_AFTER_MOBILE:
-                log("  E-Sign pending mode ON: mobile verified, clicking Continue to load unsigned PDF")
+                log("  IPV test mode ON: mobile verified, clicking Continue to open IPV")
                 if not click_continue_after_mobile_for_ipv(page):
                     raise RuntimeError("Continue button after mobile verification not found")
+                if "photo_capturing.php" in page.url.lower():
+                    if not step_ipv_capture(page):
+                        raise RuntimeError("IPV capture failed after mobile verification")
                 step_complete_esign_flow(page, ctx)
                 failed = [s for s in STEPS if s["status"] == "FAIL"]
                 overall_status = "FAIL" if failed else "PASS"
@@ -3634,6 +3902,8 @@ def run_ekyc_test() -> str:
             # ── Step 11: Email Verification ──────────────────────────────────
             if not step_email_verification(page, ctx):
                 log("  Email verification failed — continuing")
+
+            dismiss_account_aggregator_failure_popup(page)
 
             # ── Step 12: Personal Details ────────────────────────────────────
             if not step_personal_details(page):

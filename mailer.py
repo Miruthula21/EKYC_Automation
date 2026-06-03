@@ -12,6 +12,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 from config import EMAIL_REPORT
+from teams_reporter import send_teams_report
 
 
 def _html_escape(value: str) -> str:
@@ -32,37 +33,59 @@ def send_report(status: str, video_path: str, log_lines: list, step_results: lis
         passed = step["status"] == "PASS"
         s_icon = "PASS" if passed else "FAIL"
         s_color = "#dcfce7" if passed else "#fee2e2"
+        testcase_id = (
+            step.get("Test Case ID")
+            or step.get("testcase_id")
+            or step.get("case_id")
+            or step.get("id")
+            or step.get("step_id")
+            or ""
+        )
         step_rows += f"""
         <tr style="background:{s_color}">
-            <td style="padding:3px;border:1px solid #888">{_html_escape(step['step'])}</td>
-            <td style="padding:3px;border:1px solid #888">{s_icon}</td>
-            <td style="padding:3px;border:1px solid #888">{_html_escape(step.get('step',''))}</td>
-            <td style="padding:3px;border:1px solid #888;color:#dc2626">{_html_escape(step.get('note',''))}</td>
+            <td style="padding:10px;border:1px solid #d1d5db">{_html_escape(testcase_id)}</td>
+            <td style="padding:10px;border:1px solid #d1d5db">{_html_escape(step['step'])}</td>
+            <td style="padding:10px;border:1px solid #d1d5db;font-weight:700;color:{color}">{s_icon}</td>
+            <td style="padding:10px;border:1px solid #d1d5db">{_html_escape(step.get('step',''))}</td>
+            <td style="padding:10px;border:1px solid #d1d5db">{_html_escape(step.get('note',''))}</td>
         </tr>"""
 
     safe_video_path = _html_escape(video_path) if video_path else ""
     html = f"""
-    <html><body style="font-family:Arial,sans-serif;padding:20px;color:#222">
-            <h2>E-KYC Automation Report</h2>
-            <p><b>Code Review:</b> PASS</p>
-            <p><b>Test Execution:</b> <span style="color:{color}"><b>{status}</b></span></p>
-            <p><b>Duration:</b> Handled inside E-KYC runner</p>
-            <h3>Step Results</h3>
-            <table style="width:100%;border-collapse:collapse;font-size:13px">
-                <thead>
-                    <tr style="background:#f3f4f6">
-                        <th style="padding:4px;border:1px solid #888;width:70px">Step</th>
-                        <th style="padding:4px;border:1px solid #888;width:120px">Status</th>
-                        <th style="padding:4px;border:1px solid #888">Name</th>
-                        <th style="padding:4px;border:1px solid #888">Reason</th>
-                    </tr>
-                </thead>
-                <tbody>{step_rows}</tbody>
-            </table>
-            <p><b>Time:</b> {now}</p>
-            <p><b>Video:</b> {"Attached" if video_path else "No video recording found"}</p>
-            {f"<p><b>Video File:</b> {safe_video_path}</p>" if video_path else ""}
-    </body></html>
+    <html>
+    <body style="margin:0;background:#f4f6f8;font-family:Arial,sans-serif;color:#111827">
+        <div style="max-width:1080px;margin:0 auto;padding:20px">
+            <div style="background:#ffffff;border:1px solid #e5e7eb">
+                <div style="background:#1f3f68;color:#ffffff;padding:22px 24px">
+                    <div style="font-size:22px;font-weight:700">E-KYC Automation Report</div>
+                    <div style="font-size:13px;margin-top:6px">Generated: {now} | Duration: Handled inside E-KYC runner</div>
+                </div>
+                <div style="padding:18px 24px 24px">
+                    <div style="font-size:14px;font-weight:700;margin-bottom:14px">
+                        Code Review: PASS &nbsp;|&nbsp; Test Execution:
+                        <span style="background:{'#dcfce7' if status == 'PASS' else '#fee2e2'};color:{color};padding:7px 18px;border-radius:5px">{status}</span>
+                    </div>
+                    <table style="width:100%;border-collapse:collapse;font-size:13px">
+                        <thead>
+                            <tr style="background:#344153;color:#ffffff;text-align:left">
+                                <th style="padding:10px;border:1px solid #4b5563">Test Case ID</th>
+                                <th style="padding:10px;border:1px solid #4b5563">Step</th>
+                                <th style="padding:10px;border:1px solid #4b5563">Status</th>
+                                <th style="padding:10px;border:1px solid #4b5563">Name</th>
+                                <th style="padding:10px;border:1px solid #4b5563">Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody>{step_rows}</tbody>
+                    </table>
+                    <div style="font-size:12px;color:#4b5563;margin-top:14px">
+                        Video: {"Attached" if video_path else "No video recording found"}
+                        {f"<br>Video File: {safe_video_path}" if video_path else ""}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
     """
 
     def build_message(include_video: bool):
@@ -111,7 +134,8 @@ def send_report(status: str, video_path: str, log_lines: list, step_results: lis
                 server.starttls()
                 server.ehlo()
 
-            server.login(EMAIL_REPORT["sender"], EMAIL_REPORT["password"])
+            smtp_username = EMAIL_REPORT.get("username", EMAIL_REPORT["sender"])
+            server.login(smtp_username, EMAIL_REPORT["password"])
             failed = server.sendmail(EMAIL_REPORT["sender"], receivers, msg.as_string())
             if failed:
                 raise RuntimeError(f"SMTP rejected recipients: {failed}")
@@ -127,6 +151,13 @@ def send_report(status: str, video_path: str, log_lines: list, step_results: lis
         try:
             send_once(attach_video)
             print("[Mailer] Report email sent successfully")
+            send_teams_report(
+                title=subject,
+                status=status,
+                html_body=html,
+                video_path=video_path,
+                step_results=step_results,
+            )
             return
         except Exception as exc:
             last_error = exc
@@ -141,6 +172,13 @@ def send_report(status: str, video_path: str, log_lines: list, step_results: lis
             try:
                 send_once(False)
                 print("[Mailer] Report email sent successfully without video attachment")
+                send_teams_report(
+                    title=subject,
+                    status=status,
+                    html_body=html,
+                    video_path=video_path,
+                    step_results=step_results,
+                )
                 return
             except Exception as exc:
                 last_error = exc
