@@ -692,6 +692,104 @@ def scroll_open_viewer_to_bottom(page: Page, label: str, max_scrolls: int = 35) 
     log(f"  {label} viewed till last page")
 
 
+def close_open_document_viewer(page: Page, label: str) -> bool:
+    selectors = [
+        "xpath=(//*[contains(@class,'modal') or contains(@role,'dialog') or @role='dialog']//*[self::button or self::a][normalize-space()='×' or normalize-space()='x' or normalize-space()='X'])[last()]",
+        "xpath=(//*[self::button or self::a or @role='button'][contains(@class,'close') or contains(@class,'modal-close')])[last()]",
+        "xpath=(//*[self::button or self::a or @role='button'][normalize-space()='Close'])[last()]",
+    ]
+    for selector in selectors:
+        try:
+            btn = page.locator(selector).last
+            if btn.is_visible(timeout=2_000):
+                btn.click(force=True, timeout=3_000)
+                page.wait_for_timeout(1_000)
+                log(f"  {label} viewer closed")
+                return True
+        except Exception:
+            continue
+    try:
+        result = page.evaluate("""
+        () => {
+            const visible = el => {
+                const r = el.getBoundingClientRect();
+                const s = getComputedStyle(el);
+                return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
+            };
+            const btn = [...document.querySelectorAll('button,a,[role=button],span')]
+                .filter(visible)
+                .reverse()
+                .find(el => /^(×|x|close)$/i.test((el.innerText || el.getAttribute('aria-label') || '').trim()) || /close/i.test(el.className || ''));
+            if (!btn) return {ok:false};
+            btn.scrollIntoView({block:'center', inline:'center'});
+            btn.click();
+            return {ok:true, text:(btn.innerText || btn.getAttribute('aria-label') || '').trim()};
+        }
+        """)
+        if result and result.get("ok"):
+            page.wait_for_timeout(1_000)
+            log(f"  {label} viewer closed via JS: {result}")
+            return True
+    except Exception:
+        pass
+    try:
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(1_000)
+        log(f"  {label} viewer close attempted by Escape")
+        return True
+    except Exception:
+        return False
+
+
+def view_fetched_document(page: Page, section_label: str) -> bool:
+    section_key = "bank" if "bank" in section_label.lower() else "financial"
+    try:
+        clicked = page.evaluate(
+            """
+            (sectionKey) => {
+                const visible = el => {
+                    const r = el.getBoundingClientRect();
+                    const s = getComputedStyle(el);
+                    return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
+                };
+                const textOf = el => (el.innerText || el.value || el.getAttribute('aria-label') || '').trim();
+                const controls = [...document.querySelectorAll('button,a,[role=button],input[type=button]')]
+                    .filter(visible)
+                    .filter(el => /view/i.test(textOf(el)));
+                const score = el => {
+                    const data = `${el.getAttribute('data-val') || ''} ${el.getAttribute('href') || ''} ${el.getAttribute('onclick') || ''}`.toLowerCase();
+                    const block = (el.closest('label,div,section,article,form')?.innerText || '').toLowerCase();
+                    if (sectionKey === 'bank') {
+                        return (data.includes('bank') ? 20 : 0) + (block.includes('bank proof') ? 10 : 0) - (block.includes('financial') ? 15 : 0);
+                    }
+                    return (data.includes('fin') || data.includes('income') ? 20 : 0) + (block.includes('financial') ? 10 : 0) - (block.includes('bank proof') ? 15 : 0);
+                };
+                const target = controls.sort((a, b) => score(b) - score(a))[0];
+                if (!target || score(target) < -5) return {ok:false, count:controls.length};
+                target.scrollIntoView({block:'center', inline:'center'});
+                const r = target.getBoundingClientRect();
+                for (const type of ['pointerdown','mousedown','pointerup','mouseup','click']) {
+                    target.dispatchEvent(new MouseEvent(type, {bubbles:true, cancelable:true, view:window, clientX:r.left+r.width/2, clientY:r.top+r.height/2}));
+                }
+                target.click();
+                return {ok:true, text:textOf(target), dataVal:target.getAttribute('data-val') || '', score:score(target)};
+            }
+            """,
+            section_key,
+        )
+        if not clicked or not clicked.get("ok"):
+            log(f"  {section_label} View button not found: {clicked}")
+            return False
+        log(f"  {section_label} View clicked: {clicked}")
+        page.wait_for_timeout(3_000)
+        scroll_open_viewer_to_bottom(page, section_label, max_scrolls=45)
+        close_open_document_viewer(page, section_label)
+        return True
+    except Exception as e:
+        log(f"  {section_label} View failed: {e}")
+        return False
+
+
 def accept_ipv_camera_consent(page: Page, timeout: int = 5_000) -> bool:
     try:
         popup = page.locator(
@@ -2202,7 +2300,6 @@ def step_email_verification(page: Page, ctx: BrowserContext) -> bool:
 
 def step_personal_details(page: Page) -> bool:
     STEP = "Personal Details"
-    dismiss_account_aggregator_failure_popup(page)
 
     def click_text_button(text: str, index: int = 0, timeout: int = 1_500) -> bool:
         locators = [
@@ -2401,13 +2498,79 @@ from config import TEST_FILES
 
 
 
+def select_only_state_bank_of_india(page: Page) -> bool:
+    """Onemoney consent should share only SBI account data."""
+    result = page.evaluate("""
+    () => {
+        const visible = el => {
+            const r = el.getBoundingClientRect();
+            const s = getComputedStyle(el);
+            return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
+        };
+        const clickEl = el => {
+            if (!el) return false;
+            el.scrollIntoView({block:'center', inline:'center'});
+            const r = el.getBoundingClientRect();
+            for (const type of ['pointerdown','mousedown','pointerup','mouseup','click']) {
+                el.dispatchEvent(new MouseEvent(type, {bubbles:true, cancelable:true, view:window, clientX:r.left+r.width/2, clientY:r.top+r.height/2}));
+            }
+            el.click();
+            return true;
+        };
+        const isSelected = card => {
+            const checked = [...card.querySelectorAll("input[type='checkbox'],input[type='radio']")].some(input => input.checked);
+            const marked = [...card.querySelectorAll('*')].some(el => {
+                const s = getComputedStyle(el);
+                const text = (el.innerText || el.getAttribute('aria-label') || '').toLowerCase();
+                return /checked|selected|check/.test((el.className || '') + ' ' + text) &&
+                    visible(el) &&
+                    (s.backgroundColor.includes('139') || s.backgroundColor.includes('195') || s.color.includes('139'));
+            });
+            return checked || marked;
+        };
+        const cards = [...document.querySelectorAll('div,section,article,label')]
+            .filter(visible)
+            .filter(el => /(state bank of india|kotak mahindra bank|kotak bank)/i.test(el.innerText || ''))
+            .sort((a, b) => (a.getBoundingClientRect().width * a.getBoundingClientRect().height) - (b.getBoundingClientRect().width * b.getBoundingClientRect().height));
+        const sbiCard = cards.find(el => /state bank of india/i.test(el.innerText || ''));
+        const kotakCard = cards.find(el => /kotak mahindra bank|kotak bank/i.test(el.innerText || ''));
+        const selectAll = [...document.querySelectorAll("input[type='checkbox'], [role='checkbox']")]
+            .find(el => /select all/i.test(((el.closest('label') || el.parentElement || document.body).innerText || '') + ' ' + (el.getAttribute('aria-label') || '')));
+        if (selectAll && (selectAll.checked || selectAll.getAttribute('aria-checked') === 'true')) {
+            clickEl(selectAll);
+        }
+        if (kotakCard && isSelected(kotakCard)) {
+            const kotakToggle = [...kotakCard.querySelectorAll("input[type='checkbox'],input[type='radio'],[role='checkbox'],button,span,div")]
+                .filter(visible)
+                .find(el => /checkbox|check|tick|selected/i.test((el.className || '') + ' ' + (el.getAttribute('role') || '') + ' ' + (el.getAttribute('aria-label') || ''))) || kotakCard;
+            clickEl(kotakToggle);
+        }
+        if (sbiCard && !isSelected(sbiCard)) {
+            const sbiToggle = [...sbiCard.querySelectorAll("input[type='checkbox'],input[type='radio'],[role='checkbox'],button,span,div")]
+                .filter(visible)
+                .find(el => /checkbox|check|tick|selected/i.test((el.className || '') + ' ' + (el.getAttribute('role') || '') + ' ' + (el.getAttribute('aria-label') || ''))) || sbiCard;
+            clickEl(sbiToggle);
+        }
+        return {
+            ok: !!sbiCard,
+            sbiSelected: sbiCard ? isSelected(sbiCard) : false,
+            kotakSelected: kotakCard ? isSelected(kotakCard) : false,
+        };
+    }
+    """)
+    log(f"  Onemoney account selection result: {result}")
+    return bool(result and result.get("ok") and result.get("sbiSelected") and not result.get("kotakSelected"))
+
+
 def step_onemoney_choose_accounts(page: Page) -> bool:
     STEP = "Onemoney - Choose Linked Accounts"
     try:
         page.wait_for_load_state("domcontentloaded", timeout=15000)
         page.wait_for_timeout(1500)
-        log("  Onemoney bank account is already auto-selected; leaving it unchanged")
-        step_pass(STEP, "Auto-selected bank left unchanged")
+        if not select_only_state_bank_of_india(page):
+            step_fail(STEP, "Unable to keep only State Bank of India selected")
+            return False
+        step_pass(STEP, "Only State Bank of India selected")
         return True
     except Exception as e:
         step_fail(STEP, str(e))
@@ -2420,8 +2583,8 @@ def step_onemoney_consent(page: Page) -> bool:
         page.wait_for_load_state("domcontentloaded", timeout=15000)
         page.wait_for_timeout(1500)
 
-        # Bank is already selected by Onemoney. Do not touch the checkbox.
-        log("  Onemoney consent page: bank selection left unchanged")
+        if not select_only_state_bank_of_india(page):
+            log("  SBI-only selection check did not fully confirm; attempting consent with visible selection")
 
         approve_clicked = False
         deadline = time.time() + 45
@@ -2681,6 +2844,18 @@ def aa_statement_already_fetched(page: Page) -> bool:
         return False
 
 
+def aa_documents_available(page: Page) -> bool:
+    try:
+        body = page.locator("body").inner_text(timeout=3000).lower()
+        return (
+            "fetched from account aggregator" in body
+            or ("bank statement fetched" in body and "view" in body)
+            or bool(page.locator("xpath=//*[self::button or self::a][normalize-space()='View']").count() >= 2)
+        )
+    except Exception:
+        return False
+
+
 def document_manual_required(page: Page) -> bool:
     try:
         body = page.locator("body").inner_text(timeout=3000).lower()
@@ -2698,8 +2873,12 @@ def step_document_upload(page: Page) -> bool:
         page.wait_for_load_state("domcontentloaded", timeout=15000)
         page.wait_for_timeout(2000)
 
-        manual_needed = document_manual_required(page)
-        if manual_needed:
+        aa_docs_available = aa_documents_available(page)
+        manual_needed = (not aa_docs_available) and document_manual_required(page)
+        if aa_docs_available:
+            log("  AA documents fetched; viewing Bank Proof before Signature")
+            view_fetched_document(page, "Bank Proof")
+        elif manual_needed:
             log("  AA statement not available; uploading Bank Proof before Signature")
             upload_document_section(page, "Bank Proof", "signature", ["Latest 3 Month Bank Statement", "Bank Statement", "ITR", "Salary Slip"])
         else:
@@ -2720,8 +2899,10 @@ def step_document_upload(page: Page) -> bool:
                 page.wait_for_timeout(2500)
                 click_use_original_near_latest_upload(page, "Signature")
 
-        # If AA did not fetch statement, upload financial proof after signature.
-        if manual_needed:
+        if aa_docs_available:
+            log("  Viewing fetched Financial Statement after Signature")
+            view_fetched_document(page, "Financial Statements")
+        elif manual_needed:
             log("  Uploading Financial Statement after Signature")
             upload_document_section(page, "Financial Statements", "signature", ["Salary Slip", "Bank Statement", "ITR", "Latest 3 Month"])
 
@@ -3902,8 +4083,6 @@ def run_ekyc_test() -> str:
             # ── Step 11: Email Verification ──────────────────────────────────
             if not step_email_verification(page, ctx):
                 log("  Email verification failed — continuing")
-
-            dismiss_account_aggregator_failure_popup(page)
 
             # ── Step 12: Personal Details ────────────────────────────────────
             if not step_personal_details(page):
