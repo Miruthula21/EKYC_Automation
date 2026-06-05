@@ -2489,72 +2489,75 @@ from config import TEST_FILES
 
 def select_only_state_bank_of_india(page: Page) -> bool:
     """Onemoney consent should share only SBI account data."""
-    result = page.evaluate("""
+    script = """
     () => {
         const visible = el => {
+            if (!el) return false;
             const r = el.getBoundingClientRect();
             const s = getComputedStyle(el);
             return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
+        };
+        const textOf = el => (el?.innerText || el?.value || el?.getAttribute?.('aria-label') || '').trim();
+        const greenish = value => {
+            const nums = (value || '').match(/\\d+/g);
+            if (!nums || nums.length < 3) return false;
+            const [r, g, b] = nums.map(Number);
+            return g > 120 && r < 190 && b < 160;
+        };
+        const clickAt = (x, y) => {
+            const el = document.elementFromPoint(x, y);
+            if (!el) return false;
+            for (const type of ['pointerdown','mousedown','pointerup','mouseup','click']) {
+                el.dispatchEvent(new MouseEvent(type, {bubbles:true, cancelable:true, view:window, clientX:x, clientY:y}));
+            }
+            el.click();
+            return true;
         };
         const clickEl = el => {
             if (!el) return false;
             el.scrollIntoView({block:'center', inline:'center'});
             const r = el.getBoundingClientRect();
-            for (const type of ['pointerdown','mousedown','pointerup','mouseup','click']) {
-                el.dispatchEvent(new MouseEvent(type, {bubbles:true, cancelable:true, view:window, clientX:r.left+r.width/2, clientY:r.top+r.height/2}));
-            }
-            el.click();
-            return true;
+            return clickAt(r.left + r.width / 2, r.top + r.height / 2);
         };
-        const textOf = el => (el.innerText || el.value || el.getAttribute('aria-label') || '').trim();
-        const makeCard = textRegex => {
+        const cardFor = regex => {
             const textNode = [...document.querySelectorAll('div,span,p,h1,h2,h3,h4,label')]
                 .filter(visible)
-                .find(el => textRegex.test(textOf(el)));
+                .find(el => regex.test(textOf(el)));
             if (!textNode) return null;
             let card = textNode;
-            for (let i = 0; i < 7 && card.parentElement; i++) {
+            for (let i = 0; i < 8 && card.parentElement; i++) {
                 const r = card.getBoundingClientRect();
-                if (r.width >= 250 && r.height >= 90) return card;
+                if (r.width >= 240 && r.height >= 90) return card;
                 card = card.parentElement;
             }
             return card;
         };
-        const greenish = value => {
-            const nums = (value || '').match(/\\d+/g);
-            if (!nums || nums.length < 3) return false;
-            const [r, g, b] = nums.map(Number);
-            return g > 120 && r < 180 && b < 140;
-        };
         const isSelected = card => {
-            const checked = [...card.querySelectorAll("input[type='checkbox'],input[type='radio']")].some(input => input.checked);
-            const marked = [...card.querySelectorAll('*')].some(el => {
+            if (!card) return false;
+            const inputs = [...card.querySelectorAll("input[type='checkbox'],input[type='radio']")];
+            if (inputs.some(input => input.checked || input.getAttribute('aria-checked') === 'true')) return true;
+            return [...card.querySelectorAll('*')].some(el => {
+                if (!visible(el)) return false;
                 const s = getComputedStyle(el);
-                const text = (el.innerText || el.getAttribute('aria-label') || '').toLowerCase();
-                return /checked|selected|check|tick/i.test((el.className || '') + ' ' + text) &&
-                    visible(el) &&
+                const r = el.getBoundingClientRect();
+                const cls = String(el.className || '').toLowerCase();
+                const aria = String(el.getAttribute('aria-label') || '').toLowerCase();
+                return r.width <= 80 && r.height <= 80 &&
+                    /check|tick|selected|active/.test(cls + ' ' + aria) &&
                     (greenish(s.backgroundColor) || greenish(s.color));
             });
-            return checked || marked;
         };
-        const clickCardCheck = card => {
+        const clickCardCheckbox = card => {
             if (!card) return false;
+            card.scrollIntoView({block:'center', inline:'center'});
             const r = card.getBoundingClientRect();
-            const target = [...card.querySelectorAll("input[type='checkbox'],input[type='radio'],[role='checkbox'],button,span,div")]
-                .filter(visible)
-                .map(el => ({el, r: el.getBoundingClientRect(), s: getComputedStyle(el)}))
-                .filter(x => x.r.width <= 80 && x.r.height <= 80)
-                .sort((a, b) => {
-                    const da = Math.abs((r.right - 22) - (a.r.left + a.r.width / 2)) + Math.abs((r.top + 25) - (a.r.top + a.r.height / 2));
-                    const db = Math.abs((r.right - 22) - (b.r.left + b.r.width / 2)) + Math.abs((r.top + 25) - (b.r.top + b.r.height / 2));
-                    const ga = greenish(a.s.backgroundColor) || greenish(a.s.color) ? -100 : 0;
-                    const gb = greenish(b.s.backgroundColor) || greenish(b.s.color) ? -100 : 0;
-                    return (da + ga) - (db + gb);
-                })[0]?.el;
-            return clickEl(target || card);
+            const inputs = [...card.querySelectorAll("input[type='checkbox'],input[type='radio'],[role='checkbox']")].filter(visible);
+            if (inputs.length) return clickEl(inputs[inputs.length - 1]);
+            // Onemoney puts the green tick at the top-right of the account card.
+            return clickAt(r.right - 28, r.top + 28) || clickAt(r.right - 18, r.top + 18);
         };
-        const sbiCard = makeCard(/state bank of india/i);
-        const kotakCard = makeCard(/kotak mahindra bank|kotak bank/i);
+        const sbiCard = cardFor(/state bank of india/i);
+        const kotakCard = cardFor(/kotak mahindra bank|kotak bank/i);
         const selectAllText = [...document.querySelectorAll('label,span,div')]
             .filter(visible)
             .find(el => /^select all$/i.test(textOf(el)));
@@ -2570,22 +2573,71 @@ def select_only_state_bank_of_india(page: Page) -> bool:
             greenish(getComputedStyle(selectAllBox).color)
         );
         if (selectAllChecked) clickEl(selectAllBox || selectAllText);
-        if (kotakCard && isSelected(kotakCard)) {
-            clickCardCheck(kotakCard);
-        }
-        if (sbiCard && !isSelected(sbiCard)) {
-            clickCardCheck(sbiCard);
-        }
+        const beforeKotak = isSelected(kotakCard);
+        if (beforeKotak) clickCardCheckbox(kotakCard);
+        const beforeSbi = isSelected(sbiCard);
+        if (sbiCard && !beforeSbi) clickCardCheckbox(sbiCard);
         return {
             ok: !!sbiCard,
-            sbiSelected: sbiCard ? isSelected(sbiCard) : false,
-            kotakSelected: kotakCard ? isSelected(kotakCard) : false,
+            sbiSelected: isSelected(sbiCard),
+            kotakSelected: isSelected(kotakCard),
+            kotakUntickAttempted: beforeKotak,
             selectAllWasChecked: selectAllChecked,
         };
     }
-    """)
-    log(f"  Onemoney account selection result: {result}")
-    return bool(result and result.get("ok") and result.get("sbiSelected") and not result.get("kotakSelected"))
+    """
+    result = None
+    for attempt in range(1, 6):
+        result = page.evaluate(script)
+        log(f"  Onemoney account selection attempt {attempt}: {result}")
+        page.wait_for_timeout(900)
+        check = page.evaluate("""
+        () => {
+            const visible = el => {
+                if (!el) return false;
+                const r = el.getBoundingClientRect();
+                const s = getComputedStyle(el);
+                return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
+            };
+            const textOf = el => (el?.innerText || '').trim();
+            const greenish = value => {
+                const nums = (value || '').match(/\\d+/g);
+                if (!nums || nums.length < 3) return false;
+                const [r, g, b] = nums.map(Number);
+                return g > 120 && r < 190 && b < 160;
+            };
+            const cardFor = regex => {
+                const node = [...document.querySelectorAll('div,span,p,h1,h2,h3,h4,label')].filter(visible).find(el => regex.test(textOf(el)));
+                if (!node) return null;
+                let card = node;
+                for (let i = 0; i < 8 && card.parentElement; i++) {
+                    const r = card.getBoundingClientRect();
+                    if (r.width >= 240 && r.height >= 90) return card;
+                    card = card.parentElement;
+                }
+                return card;
+            };
+            const isSelected = card => {
+                if (!card) return false;
+                if ([...card.querySelectorAll("input[type='checkbox'],input[type='radio']")].some(input => input.checked || input.getAttribute('aria-checked') === 'true')) return true;
+                return [...card.querySelectorAll('*')].some(el => {
+                    if (!visible(el)) return false;
+                    const s = getComputedStyle(el);
+                    const r = el.getBoundingClientRect();
+                    return r.width <= 80 && r.height <= 80 && /check|tick|selected|active/i.test(String(el.className || '') + ' ' + String(el.getAttribute('aria-label') || '')) &&
+                        (greenish(s.backgroundColor) || greenish(s.color));
+                });
+            };
+            const sbiCard = cardFor(/state bank of india/i);
+            const kotakCard = cardFor(/kotak mahindra bank|kotak bank/i);
+            return {ok: !!sbiCard, sbiSelected: isSelected(sbiCard), kotakSelected: isSelected(kotakCard)};
+        }
+        """)
+        log(f"  Onemoney account selection check {attempt}: {check}")
+        if check and check.get("ok") and check.get("sbiSelected") and not check.get("kotakSelected"):
+            return True
+    log(f"  Onemoney account selection final result: {result}")
+    return False
 
 
 def step_onemoney_choose_accounts(page: Page) -> bool:
