@@ -19,7 +19,7 @@ def _html_escape(value: str) -> str:
     return str(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def send_report(status: str, video_path: str, log_lines: list, step_results: list):
+def send_report(status: str, video_path: str, log_lines: list, step_results: list, duration: str = ""):
     receivers = EMAIL_REPORT["receiver"]
     if isinstance(receivers, str):
         receivers = [receivers]
@@ -27,6 +27,10 @@ def send_report(status: str, video_path: str, log_lines: list, step_results: lis
     color = "#16a34a" if status == "PASS" else "#dc2626"
     now = datetime.datetime.now().strftime("%d %b %Y, %I:%M %p")
     subject = f"E-KYC Automation Report - {status} | {now}"
+    total_count = len(step_results)
+    pass_count = sum(1 for step in step_results if step.get("status") == "PASS")
+    fail_count = sum(1 for step in step_results if step.get("status") != "PASS")
+    display_duration = duration or "0m 0s"
 
     step_rows = ""
     for step in step_results:
@@ -58,12 +62,15 @@ def send_report(status: str, video_path: str, log_lines: list, step_results: lis
             <div style="background:#ffffff;border:1px solid #e5e7eb">
                 <div style="background:#1f3f68;color:#ffffff;padding:22px 24px">
                     <div style="font-size:22px;font-weight:700">E-KYC Automation Report</div>
-                    <div style="font-size:13px;margin-top:6px">Generated: {now} | Duration: Handled inside E-KYC runner</div>
+                    <div style="font-size:13px;margin-top:6px">Generated: {now} | Duration: {_html_escape(display_duration)}</div>
                 </div>
                 <div style="padding:18px 24px 24px">
                     <div style="font-size:14px;font-weight:700;margin-bottom:14px">
                         Code Review: PASS &nbsp;|&nbsp; Test Execution:
                         <span style="background:{'#dcfce7' if status == 'PASS' else '#fee2e2'};color:{color};padding:7px 18px;border-radius:5px">{status}</span>
+                    </div>
+                    <div style="font-size:14px;font-weight:700;margin-bottom:14px">
+                        Total Testcases: {total_count} &nbsp;|&nbsp; Pass: {pass_count} &nbsp;|&nbsp; Fail: {fail_count}
                     </div>
                     <table style="width:100%;border-collapse:collapse;font-size:13px">
                         <thead>

@@ -640,54 +640,43 @@ def click_enter_bank_details_manually(page: Page) -> bool:
     return False
 
 
-def scroll_open_viewer_to_bottom(page: Page, label: str, max_scrolls: int = 35) -> None:
-    same_position_count = 0
-    last_position = None
+def scroll_open_viewer_to_bottom(page: Page, label: str, max_scrolls: int = 45) -> None:
+    viewer_box = page.evaluate("""
+    () => {
+        const visible = el => {
+            const r = el.getBoundingClientRect();
+            const s = getComputedStyle(el);
+            return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
+        };
+        const candidates = [...document.querySelectorAll('iframe,embed,object,.modal,[role="dialog"],.pdfViewer,.viewerContainer,div')]
+            .filter(visible)
+            .map(el => ({el, r: el.getBoundingClientRect()}))
+            .filter(x => x.r.width > 250 && x.r.height > 250)
+            .sort((a, b) => (b.r.width * b.r.height) - (a.r.width * a.r.height));
+        const target = candidates.find(x => /iframe|embed|object/i.test(x.el.tagName)) || candidates[0];
+        if (!target) return null;
+        return {
+            x: target.r.left,
+            y: target.r.top,
+            width: target.r.width,
+            height: target.r.height,
+        };
+    }
+    """)
+
+    if viewer_box:
+        center_x = viewer_box["x"] + viewer_box["width"] / 2
+        center_y = viewer_box["y"] + viewer_box["height"] / 2
+        page.mouse.move(center_x, center_y)
+        page.mouse.click(center_x, center_y)
 
     for _ in range(max_scrolls):
-        position = page.evaluate(
-            """
-            () => {
-                const candidates = [document.scrollingElement, document.documentElement, document.body]
-                    .concat(Array.from(document.querySelectorAll(
-                        '.modal, .modal-body, [role="dialog"], .pdfViewer, .viewerContainer, iframe, embed, object, div'
-                    )));
-
-                let best = null;
-                for (const el of candidates) {
-                    if (!el || el.tagName === 'IFRAME' || el.tagName === 'EMBED' || el.tagName === 'OBJECT') continue;
-                    const scrollHeight = el.scrollHeight || 0;
-                    const clientHeight = el.clientHeight || 0;
-                    if (scrollHeight > clientHeight + 50) {
-                        if (!best || (scrollHeight - clientHeight) > (best.scrollHeight - best.clientHeight)) {
-                            best = el;
-                        }
-                    }
-                }
-
-                const target = best || document.scrollingElement || document.documentElement || document.body;
-                target.scrollTop = Math.min(target.scrollTop + 300, target.scrollHeight);
-                window.scrollBy(0, 300);
-
-                return {
-                    top: Math.round(target.scrollTop || window.scrollY || 0),
-                    max: Math.round((target.scrollHeight || document.body.scrollHeight || 0) - (target.clientHeight || window.innerHeight || 0))
-                };
-            }
-            """
-        )
-        page.mouse.wheel(0, 300)
-        page.wait_for_timeout(900)
-
-        current_position = (position.get("top"), position.get("max"))
-        if current_position == last_position or position.get("top", 0) >= position.get("max", 1) - 5:
-            same_position_count += 1
-        else:
-            same_position_count = 0
-        last_position = current_position
-
-        if same_position_count >= 3:
-            break
+        try:
+            page.keyboard.press("PageDown")
+        except Exception:
+            pass
+        page.mouse.wheel(0, 900)
+        page.wait_for_timeout(650)
 
     log(f"  {label} viewed till last page")
 
@@ -2517,44 +2506,81 @@ def select_only_state_bank_of_india(page: Page) -> bool:
             el.click();
             return true;
         };
+        const textOf = el => (el.innerText || el.value || el.getAttribute('aria-label') || '').trim();
+        const makeCard = textRegex => {
+            const textNode = [...document.querySelectorAll('div,span,p,h1,h2,h3,h4,label')]
+                .filter(visible)
+                .find(el => textRegex.test(textOf(el)));
+            if (!textNode) return null;
+            let card = textNode;
+            for (let i = 0; i < 7 && card.parentElement; i++) {
+                const r = card.getBoundingClientRect();
+                if (r.width >= 250 && r.height >= 90) return card;
+                card = card.parentElement;
+            }
+            return card;
+        };
+        const greenish = value => {
+            const nums = (value || '').match(/\\d+/g);
+            if (!nums || nums.length < 3) return false;
+            const [r, g, b] = nums.map(Number);
+            return g > 120 && r < 180 && b < 140;
+        };
         const isSelected = card => {
             const checked = [...card.querySelectorAll("input[type='checkbox'],input[type='radio']")].some(input => input.checked);
             const marked = [...card.querySelectorAll('*')].some(el => {
                 const s = getComputedStyle(el);
                 const text = (el.innerText || el.getAttribute('aria-label') || '').toLowerCase();
-                return /checked|selected|check/.test((el.className || '') + ' ' + text) &&
+                return /checked|selected|check|tick/i.test((el.className || '') + ' ' + text) &&
                     visible(el) &&
-                    (s.backgroundColor.includes('139') || s.backgroundColor.includes('195') || s.color.includes('139'));
+                    (greenish(s.backgroundColor) || greenish(s.color));
             });
             return checked || marked;
         };
-        const cards = [...document.querySelectorAll('div,section,article,label')]
-            .filter(visible)
-            .filter(el => /(state bank of india|kotak mahindra bank|kotak bank)/i.test(el.innerText || ''))
-            .sort((a, b) => (a.getBoundingClientRect().width * a.getBoundingClientRect().height) - (b.getBoundingClientRect().width * b.getBoundingClientRect().height));
-        const sbiCard = cards.find(el => /state bank of india/i.test(el.innerText || ''));
-        const kotakCard = cards.find(el => /kotak mahindra bank|kotak bank/i.test(el.innerText || ''));
-        const selectAll = [...document.querySelectorAll("input[type='checkbox'], [role='checkbox']")]
-            .find(el => /select all/i.test(((el.closest('label') || el.parentElement || document.body).innerText || '') + ' ' + (el.getAttribute('aria-label') || '')));
-        if (selectAll && (selectAll.checked || selectAll.getAttribute('aria-checked') === 'true')) {
-            clickEl(selectAll);
-        }
-        if (kotakCard && isSelected(kotakCard)) {
-            const kotakToggle = [...kotakCard.querySelectorAll("input[type='checkbox'],input[type='radio'],[role='checkbox'],button,span,div")]
+        const clickCardCheck = card => {
+            if (!card) return false;
+            const r = card.getBoundingClientRect();
+            const target = [...card.querySelectorAll("input[type='checkbox'],input[type='radio'],[role='checkbox'],button,span,div")]
                 .filter(visible)
-                .find(el => /checkbox|check|tick|selected/i.test((el.className || '') + ' ' + (el.getAttribute('role') || '') + ' ' + (el.getAttribute('aria-label') || ''))) || kotakCard;
-            clickEl(kotakToggle);
+                .map(el => ({el, r: el.getBoundingClientRect(), s: getComputedStyle(el)}))
+                .filter(x => x.r.width <= 80 && x.r.height <= 80)
+                .sort((a, b) => {
+                    const da = Math.abs((r.right - 22) - (a.r.left + a.r.width / 2)) + Math.abs((r.top + 25) - (a.r.top + a.r.height / 2));
+                    const db = Math.abs((r.right - 22) - (b.r.left + b.r.width / 2)) + Math.abs((r.top + 25) - (b.r.top + b.r.height / 2));
+                    const ga = greenish(a.s.backgroundColor) || greenish(a.s.color) ? -100 : 0;
+                    const gb = greenish(b.s.backgroundColor) || greenish(b.s.color) ? -100 : 0;
+                    return (da + ga) - (db + gb);
+                })[0]?.el;
+            return clickEl(target || card);
+        };
+        const sbiCard = makeCard(/state bank of india/i);
+        const kotakCard = makeCard(/kotak mahindra bank|kotak bank/i);
+        const selectAllText = [...document.querySelectorAll('label,span,div')]
+            .filter(visible)
+            .find(el => /^select all$/i.test(textOf(el)));
+        const selectAllBox = selectAllText
+            ? [...(selectAllText.parentElement || document).querySelectorAll("input[type='checkbox'],[role='checkbox'],span,div")]
+                .filter(visible)
+                .sort((a, b) => Math.abs(a.getBoundingClientRect().left - selectAllText.getBoundingClientRect().right) - Math.abs(b.getBoundingClientRect().left - selectAllText.getBoundingClientRect().right))[0]
+            : null;
+        const selectAllChecked = !!selectAllBox && (
+            selectAllBox.checked ||
+            selectAllBox.getAttribute('aria-checked') === 'true' ||
+            greenish(getComputedStyle(selectAllBox).backgroundColor) ||
+            greenish(getComputedStyle(selectAllBox).color)
+        );
+        if (selectAllChecked) clickEl(selectAllBox || selectAllText);
+        if (kotakCard && isSelected(kotakCard)) {
+            clickCardCheck(kotakCard);
         }
         if (sbiCard && !isSelected(sbiCard)) {
-            const sbiToggle = [...sbiCard.querySelectorAll("input[type='checkbox'],input[type='radio'],[role='checkbox'],button,span,div")]
-                .filter(visible)
-                .find(el => /checkbox|check|tick|selected/i.test((el.className || '') + ' ' + (el.getAttribute('role') || '') + ' ' + (el.getAttribute('aria-label') || ''))) || sbiCard;
-            clickEl(sbiToggle);
+            clickCardCheck(sbiCard);
         }
         return {
             ok: !!sbiCard,
             sbiSelected: sbiCard ? isSelected(sbiCard) : false,
             kotakSelected: kotakCard ? isSelected(kotakCard) : false,
+            selectAllWasChecked: selectAllChecked,
         };
     }
     """)
@@ -2584,7 +2610,8 @@ def step_onemoney_consent(page: Page) -> bool:
         page.wait_for_timeout(1500)
 
         if not select_only_state_bank_of_india(page):
-            log("  SBI-only selection check did not fully confirm; attempting consent with visible selection")
+            step_fail(STEP, "Unable to keep only State Bank of India selected before approval")
+            return False
 
         approve_clicked = False
         deadline = time.time() + 45
@@ -3946,6 +3973,7 @@ def run_ekyc_test() -> str:
     global LOG, STEPS
     LOG   = []
     STEPS = []
+    run_started_at = time.time()
 
     now_str   = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     video_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "videos")
@@ -4074,11 +4102,11 @@ def run_ekyc_test() -> str:
 
             # ── Step 9: Onemoney — Choose Accounts ──────────────────────────
             if not step_onemoney_choose_accounts(page):
-                log("  Onemoney choose accounts failed — continuing")
+                raise RuntimeError("Onemoney choose accounts failed - Kotak must be unticked before approval")
 
             # ── Step 10: Onemoney — Accept Consent ──────────────────────────
             if not step_onemoney_consent(page):
-                log("  Onemoney consent failed — continuing")
+                raise RuntimeError("Onemoney consent failed - SBI-only account selection was not confirmed")
 
             # ── Step 11: Email Verification ──────────────────────────────────
             if not step_email_verification(page, ctx):
@@ -4154,11 +4182,14 @@ def run_ekyc_test() -> str:
                 log(f"  Video save error: {ve}")
 
     try:
+        elapsed = int(time.time() - run_started_at)
+        run_duration = f"{elapsed // 60}m {elapsed % 60}s"
         send_report(
             status=overall_status,
             video_path=video_path,
             log_lines=LOG,
             step_results=STEPS,
+            duration=run_duration,
         )
     except Exception as mail_err:
         print(f"[Mailer] Could not send report: {mail_err}")
