@@ -2489,7 +2489,7 @@ from config import TEST_FILES
 
 def select_only_state_bank_of_india(page: Page) -> bool:
     """Onemoney consent should share only SBI account data."""
-    script = """
+    inspect_script = """
     () => {
         const visible = el => {
             if (!el) return false;
@@ -2497,43 +2497,33 @@ def select_only_state_bank_of_india(page: Page) -> bool:
             const s = getComputedStyle(el);
             return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
         };
-        const textOf = el => (el?.innerText || el?.value || el?.getAttribute?.('aria-label') || '').trim();
+        const textOf = el => (el?.innerText || el?.textContent || el?.value || el?.getAttribute?.('aria-label') || '').trim();
         const greenish = value => {
             const nums = (value || '').match(/\\d+/g);
             if (!nums || nums.length < 3) return false;
             const [r, g, b] = nums.map(Number);
             return g > 120 && r < 190 && b < 160;
         };
-        const clickAt = (x, y) => {
-            const el = document.elementFromPoint(x, y);
-            if (!el) return false;
-            for (const type of ['pointerdown','mousedown','pointerup','mouseup','click']) {
-                el.dispatchEvent(new MouseEvent(type, {bubbles:true, cancelable:true, view:window, clientX:x, clientY:y}));
-            }
-            el.click();
-            return true;
-        };
-        const clickEl = el => {
-            if (!el) return false;
-            el.scrollIntoView({block:'center', inline:'center'});
-            const r = el.getBoundingClientRect();
-            return clickAt(r.left + r.width / 2, r.top + r.height / 2);
-        };
         const cardFor = regex => {
-            const textNode = [...document.querySelectorAll('div,span,p,h1,h2,h3,h4,label')]
+            const textNode = [...document.querySelectorAll('div,span,p,h1,h2,h3,h4,label,strong')]
                 .filter(visible)
                 .find(el => regex.test(textOf(el)));
             if (!textNode) return null;
+            const closestCard = textNode.closest(".each__card,.cursor-pointer,[id='selectFi']");
+            if (closestCard && visible(closestCard)) return closestCard;
             let card = textNode;
-            for (let i = 0; i < 8 && card.parentElement; i++) {
+            for (let i = 0; i < 10 && card.parentElement; i++) {
                 const r = card.getBoundingClientRect();
-                if (r.width >= 240 && r.height >= 90) return card;
+                const cls = String(card.className || '').toLowerCase();
+                if ((r.width >= 240 && r.height >= 80) || /each__card|cursor-pointer|selected/.test(cls)) return card;
                 card = card.parentElement;
             }
             return card;
         };
         const isSelected = card => {
             if (!card) return false;
+            const cls = String(card.className || '').toLowerCase();
+            if (/\\bselected\\b|\\bactive\\b|\\bchecked\\b/.test(cls)) return true;
             const inputs = [...card.querySelectorAll("input[type='checkbox'],input[type='radio']")];
             if (inputs.some(input => input.checked || input.getAttribute('aria-checked') === 'true')) return true;
             return [...card.querySelectorAll('*')].some(el => {
@@ -2547,14 +2537,11 @@ def select_only_state_bank_of_india(page: Page) -> bool:
                     (greenish(s.backgroundColor) || greenish(s.color));
             });
         };
-        const clickCardCheckbox = card => {
-            if (!card) return false;
-            card.scrollIntoView({block:'center', inline:'center'});
-            const r = card.getBoundingClientRect();
-            const inputs = [...card.querySelectorAll("input[type='checkbox'],input[type='radio'],[role='checkbox']")].filter(visible);
-            if (inputs.length) return clickEl(inputs[inputs.length - 1]);
-            // Onemoney puts the green tick at the top-right of the account card.
-            return clickAt(r.right - 28, r.top + 28) || clickAt(r.right - 18, r.top + 18);
+        const point = (el, dx = 0.5, dy = 0.5) => {
+            if (!el) return null;
+            el.scrollIntoView({block:'center', inline:'center'});
+            const r = el.getBoundingClientRect();
+            return {x: r.left + r.width * dx, y: r.top + r.height * dy, w: r.width, h: r.height};
         };
         const sbiCard = cardFor(/state bank of india/i);
         const kotakCard = cardFor(/kotak mahindra bank|kotak bank/i);
@@ -2562,7 +2549,7 @@ def select_only_state_bank_of_india(page: Page) -> bool:
             .filter(visible)
             .find(el => /^select all$/i.test(textOf(el)));
         const selectAllBox = selectAllText
-            ? [...(selectAllText.parentElement || document).querySelectorAll("input[type='checkbox'],[role='checkbox'],span,div")]
+            ? [...(selectAllText.parentElement || document).querySelectorAll("input[type='checkbox'],[role='checkbox'],span,div,i")]
                 .filter(visible)
                 .sort((a, b) => Math.abs(a.getBoundingClientRect().left - selectAllText.getBoundingClientRect().right) - Math.abs(b.getBoundingClientRect().left - selectAllText.getBoundingClientRect().right))[0]
             : null;
@@ -2572,70 +2559,95 @@ def select_only_state_bank_of_india(page: Page) -> bool:
             greenish(getComputedStyle(selectAllBox).backgroundColor) ||
             greenish(getComputedStyle(selectAllBox).color)
         );
-        if (selectAllChecked) clickEl(selectAllBox || selectAllText);
-        const beforeKotak = isSelected(kotakCard);
-        if (beforeKotak) clickCardCheckbox(kotakCard);
-        const beforeSbi = isSelected(sbiCard);
-        if (sbiCard && !beforeSbi) clickCardCheckbox(sbiCard);
+        const cardPoints = card => {
+            if (!card) return {};
+            const r = card.getBoundingClientRect();
+            return {
+                tick: {x: r.right - 24, y: r.top + 24},
+                center: {x: r.left + r.width / 2, y: r.top + r.height / 2},
+                leftCenter: {x: r.left + 45, y: r.top + r.height / 2},
+            };
+        };
         return {
             ok: !!sbiCard,
             sbiSelected: isSelected(sbiCard),
             kotakSelected: isSelected(kotakCard),
-            kotakUntickAttempted: beforeKotak,
-            selectAllWasChecked: selectAllChecked,
+            selectAllChecked,
+            coords: {
+                selectAll: point(selectAllBox || selectAllText),
+                sbi: cardPoints(sbiCard),
+                kotak: cardPoints(kotakCard),
+            },
         };
     }
     """
-    result = None
-    for attempt in range(1, 6):
-        result = page.evaluate(script)
-        log(f"  Onemoney account selection attempt {attempt}: {result}")
+    click_script = """
+    ({x, y}) => {
+        const clickAt = (cx, cy) => {
+            const el = document.elementFromPoint(cx, cy);
+            if (!el) return false;
+            for (const type of ['pointerdown','mousedown','pointerup','mouseup','click']) {
+                el.dispatchEvent(new MouseEvent(type, {bubbles:true, cancelable:true, view:window, clientX:cx, clientY:cy}));
+            }
+            if (typeof el.click === 'function') el.click();
+            return true;
+        };
+        return clickAt(x, y);
+    }
+    """
+
+    def read_state():
+        return page.evaluate(inspect_script)
+
+    def click_point(point, label):
+        if not point:
+            return False
+        x = float(point.get("x", 0))
+        y = float(point.get("y", 0))
+        if x <= 0 or y <= 0:
+            return False
+        try:
+            page.mouse.click(x, y)
+        except Exception:
+            page.evaluate(click_script, {"x": x, "y": y})
+        log(f"  Onemoney account selection clicked {label} at ({int(x)}, {int(y)})")
         page.wait_for_timeout(900)
-        check = page.evaluate("""
-        () => {
-            const visible = el => {
-                if (!el) return false;
-                const r = el.getBoundingClientRect();
-                const s = getComputedStyle(el);
-                return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
-            };
-            const textOf = el => (el?.innerText || '').trim();
-            const greenish = value => {
-                const nums = (value || '').match(/\\d+/g);
-                if (!nums || nums.length < 3) return false;
-                const [r, g, b] = nums.map(Number);
-                return g > 120 && r < 190 && b < 160;
-            };
-            const cardFor = regex => {
-                const node = [...document.querySelectorAll('div,span,p,h1,h2,h3,h4,label')].filter(visible).find(el => regex.test(textOf(el)));
-                if (!node) return null;
-                let card = node;
-                for (let i = 0; i < 8 && card.parentElement; i++) {
-                    const r = card.getBoundingClientRect();
-                    if (r.width >= 240 && r.height >= 90) return card;
-                    card = card.parentElement;
-                }
-                return card;
-            };
-            const isSelected = card => {
-                if (!card) return false;
-                if ([...card.querySelectorAll("input[type='checkbox'],input[type='radio']")].some(input => input.checked || input.getAttribute('aria-checked') === 'true')) return true;
-                return [...card.querySelectorAll('*')].some(el => {
-                    if (!visible(el)) return false;
-                    const s = getComputedStyle(el);
-                    const r = el.getBoundingClientRect();
-                    return r.width <= 80 && r.height <= 80 && /check|tick|selected|active/i.test(String(el.className || '') + ' ' + String(el.getAttribute('aria-label') || '')) &&
-                        (greenish(s.backgroundColor) || greenish(s.color));
-                });
-            };
-            const sbiCard = cardFor(/state bank of india/i);
-            const kotakCard = cardFor(/kotak mahindra bank|kotak bank/i);
-            return {ok: !!sbiCard, sbiSelected: isSelected(sbiCard), kotakSelected: isSelected(kotakCard)};
-        }
-        """)
-        log(f"  Onemoney account selection check {attempt}: {check}")
-        if check and check.get("ok") and check.get("sbiSelected") and not check.get("kotakSelected"):
+        return True
+
+    result = None
+    for attempt in range(1, 8):
+        result = read_state()
+        log(f"  Onemoney account selection attempt {attempt}: {result}")
+
+        if result and result.get("ok") and result.get("sbiSelected") and not result.get("kotakSelected"):
             return True
+
+        coords = (result or {}).get("coords") or {}
+        if result and result.get("selectAllChecked"):
+            click_point(coords.get("selectAll"), "Select All")
+            result = read_state()
+            log(f"  Onemoney account selection after Select All clear {attempt}: {result}")
+
+        if result and result.get("kotakSelected"):
+            kotak = ((result.get("coords") or {}).get("kotak") or {})
+            click_point(kotak.get("tick"), "Kotak tick")
+            result = read_state()
+            log(f"  Onemoney account selection after Kotak tick {attempt}: {result}")
+            if result and result.get("kotakSelected"):
+                kotak = ((result.get("coords") or {}).get("kotak") or {})
+                click_point(kotak.get("center"), "Kotak card")
+                result = read_state()
+                log(f"  Onemoney account selection after Kotak card {attempt}: {result}")
+
+        if result and not result.get("sbiSelected"):
+            sbi = ((result.get("coords") or {}).get("sbi") or {})
+            click_point(sbi.get("tick") or sbi.get("center"), "SBI card")
+            result = read_state()
+            log(f"  Onemoney account selection after SBI select {attempt}: {result}")
+
+        if result and result.get("ok") and result.get("sbiSelected") and not result.get("kotakSelected"):
+            return True
+
     log(f"  Onemoney account selection final result: {result}")
     return False
 
