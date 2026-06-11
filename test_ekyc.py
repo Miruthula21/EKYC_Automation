@@ -2564,10 +2564,13 @@ def select_only_state_bank_of_india(page: Page) -> bool:
             const r = card.getBoundingClientRect();
             return {
                 tick: {x: r.right - 24, y: r.top + 24},
+                tickDeep: {x: r.right - 48, y: r.top + 28},
                 center: {x: r.left + r.width / 2, y: r.top + r.height / 2},
                 leftCenter: {x: r.left + 45, y: r.top + r.height / 2},
+                lowerCenter: {x: r.left + r.width / 2, y: r.top + r.height * 0.70},
             };
         };
+        const selectAllGuess = selectAllText ? point(selectAllText, 1.25, 0.50) : null;
         return {
             ok: !!sbiCard,
             sbiSelected: isSelected(sbiCard),
@@ -2575,6 +2578,7 @@ def select_only_state_bank_of_india(page: Page) -> bool:
             selectAllChecked,
             coords: {
                 selectAll: point(selectAllBox || selectAllText),
+                selectAllGuess,
                 sbi: cardPoints(sbiCard),
                 kotak: cardPoints(kotakCard),
             },
@@ -2622,22 +2626,26 @@ def select_only_state_bank_of_india(page: Page) -> bool:
         if result and result.get("ok") and result.get("sbiSelected") and not result.get("kotakSelected"):
             return True
 
-        coords = (result or {}).get("coords") or {}
-        if result and result.get("selectAllChecked"):
-            click_point(coords.get("selectAll"), "Select All")
-            result = read_state()
-            log(f"  Onemoney account selection after Select All clear {attempt}: {result}")
-
         if result and result.get("kotakSelected"):
             kotak = ((result.get("coords") or {}).get("kotak") or {})
-            click_point(kotak.get("tick"), "Kotak tick")
-            result = read_state()
-            log(f"  Onemoney account selection after Kotak tick {attempt}: {result}")
-            if result and result.get("kotakSelected"):
-                kotak = ((result.get("coords") or {}).get("kotak") or {})
-                click_point(kotak.get("center"), "Kotak card")
+            for label, point_name in [
+                ("Kotak tick", "tick"),
+                ("Kotak tick inner", "tickDeep"),
+                ("Kotak card center", "center"),
+                ("Kotak logo/card", "leftCenter"),
+                ("Kotak lower card", "lowerCenter"),
+            ]:
+                click_point(kotak.get(point_name), label)
                 result = read_state()
-                log(f"  Onemoney account selection after Kotak card {attempt}: {result}")
+                log(f"  Onemoney account selection after {label} {attempt}: {result}")
+                if result and not result.get("kotakSelected"):
+                    break
+
+        coords = (result or {}).get("coords") or {}
+        if result and result.get("kotakSelected") and result.get("selectAllChecked"):
+            click_point(coords.get("selectAllGuess") or coords.get("selectAll"), "Select All")
+            result = read_state()
+            log(f"  Onemoney account selection after Select All clear {attempt}: {result}")
 
         if result and not result.get("sbiSelected"):
             sbi = ((result.get("coords") or {}).get("sbi") or {})
