@@ -2504,21 +2504,37 @@ def select_only_state_bank_of_india(page: Page) -> bool:
             const [r, g, b] = nums.map(Number);
             return g > 120 && r < 190 && b < 160;
         };
+        const usableCardRect = el => {
+            if (!visible(el)) return false;
+            const r = el.getBoundingClientRect();
+            return r.width >= 180 && r.width <= 620 && r.height >= 60 && r.height <= 260;
+        };
         const cardFor = regex => {
-            const textNode = [...document.querySelectorAll('div,span,p,h1,h2,h3,h4,label,strong')]
+            const candidates = [];
+            const addCandidate = el => {
+                if (!el || !usableCardRect(el)) return;
+                const txt = textOf(el).toLowerCase();
+                if (!regex.test(txt)) return;
+                const r = el.getBoundingClientRect();
+                candidates.push({el, area: r.width * r.height});
+            };
+
+            [...document.querySelectorAll(".each__card,[id='selectFi'],.cursor-pointer")]
                 .filter(visible)
-                .find(el => regex.test(textOf(el)));
-            if (!textNode) return null;
-            const closestCard = textNode.closest(".each__card,.cursor-pointer,[id='selectFi']");
-            if (closestCard && visible(closestCard)) return closestCard;
-            let card = textNode;
-            for (let i = 0; i < 10 && card.parentElement; i++) {
-                const r = card.getBoundingClientRect();
-                const cls = String(card.className || '').toLowerCase();
-                if ((r.width >= 240 && r.height >= 80) || /each__card|cursor-pointer|selected/.test(cls)) return card;
-                card = card.parentElement;
-            }
-            return card;
+                .forEach(addCandidate);
+
+            [...document.querySelectorAll('div,span,p,h1,h2,h3,h4,label,strong')]
+                .filter(visible)
+                .filter(el => regex.test(textOf(el).toLowerCase()))
+                .forEach(node => {
+                    let el = node;
+                    for (let i = 0; i < 10 && el; i++, el = el.parentElement) {
+                        addCandidate(el);
+                    }
+                });
+
+            candidates.sort((a, b) => a.area - b.area);
+            return candidates.length ? candidates[0].el : null;
         };
         const isSelected = card => {
             if (!card) return false;
@@ -2568,6 +2584,7 @@ def select_only_state_bank_of_india(page: Page) -> bool:
                 center: {x: r.left + r.width / 2, y: r.top + r.height / 2},
                 leftCenter: {x: r.left + 45, y: r.top + r.height / 2},
                 lowerCenter: {x: r.left + r.width / 2, y: r.top + r.height * 0.70},
+                rect: {left: r.left, top: r.top, width: r.width, height: r.height},
             };
         };
         const selectAllGuess = selectAllText ? point(selectAllText, 1.25, 0.50) : null;
@@ -2618,8 +2635,27 @@ def select_only_state_bank_of_india(page: Page) -> bool:
         page.wait_for_timeout(900)
         return True
 
+    def dismiss_reject_popup():
+        try:
+            if page.locator("text=By Rejecting the consent").first.is_visible(timeout=500):
+                for selector in [
+                    "xpath=//*[self::button or self::a or @role='button'][normalize-space()='Cancel']",
+                    "text=Cancel",
+                ]:
+                    try:
+                        page.locator(selector).first.click(timeout=1500)
+                        log("  Onemoney reject confirmation dismissed with Cancel")
+                        page.wait_for_timeout(700)
+                        return True
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        return False
+
     result = None
     for attempt in range(1, 8):
+        dismiss_reject_popup()
         result = read_state()
         log(f"  Onemoney account selection attempt {attempt}: {result}")
 
