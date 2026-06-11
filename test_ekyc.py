@@ -683,6 +683,9 @@ def scroll_open_viewer_to_bottom(page: Page, label: str, max_scrolls: int = 45) 
 
 def close_open_document_viewer(page: Page, label: str) -> bool:
     selectors = [
+        "css=#proof_popup button.close-button[data-close][aria-label='Close modal']",
+        "css=.reveal[aria-hidden='false'] button.close-button[data-close]",
+        "css=button.close-button[data-close]",
         "xpath=(//*[contains(@class,'modal') or contains(@role,'dialog') or @role='dialog']//*[self::button or self::a][normalize-space()='×' or normalize-space()='x' or normalize-space()='X'])[last()]",
         "xpath=(//*[self::button or self::a or @role='button'][contains(@class,'close') or contains(@class,'modal-close')])[last()]",
         "xpath=(//*[self::button or self::a or @role='button'][normalize-space()='Close'])[last()]",
