@@ -1,11 +1,13 @@
 import datetime
 import json
 import os
+from pathlib import Path
 import re
 import urllib.error
 import urllib.request
 
 DEFAULT_WEBHOOK_URL = "https://defaultb5be2d2cde3a4b3680d7e5445c6627.3b.environment.api.powerplatform.com:443/powerautomate/automations/direct/workflows/33cc75b6bb2f4f7ead2c738312a3a30c/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=yIByMt1vgl_cLYJ6y6SZQz5f513zKO-pCtjlASjr9Zw"
+RESULTS_DIR = Path(os.environ.get("AUTOMATION_RESULTS_DIR", r"C:\Automation_Reports\latest"))
 
 try:
     from config import TEAMS_REPORT
@@ -89,6 +91,35 @@ def _project_name(title, flow_details):
     return title or "Automation Report"
 
 
+def _safe_file_name(value):
+    name = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "automation").strip())
+    return name.strip("_") or "automation"
+
+
+def _write_latest_result(report_name, status, duration, summary, flow_details, report_path="", video_path=""):
+    try:
+        RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "project": report_name,
+            "status": str(status or "").upper(),
+            "date": datetime.datetime.now().strftime("%d %b %Y %I:%M %p"),
+            "duration": str(duration or ""),
+            "passed": str(summary.get("passed", "")),
+            "failed": str(summary.get("failed", "")),
+            "not_automated": str(summary.get("not_automated", "")),
+            "total_tests": str(summary.get("total_tests", "")),
+            "last_passed_stage": str((flow_details or {}).get("last_passed_stage", "")),
+            "stopped_stage": str((flow_details or {}).get("stopped_stage", "")),
+            "report_path": str(report_path or ""),
+            "video_path": str(video_path or ""),
+        }
+        result_path = RESULTS_DIR / f"{_safe_file_name(report_name)}.json"
+        result_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        print(f"[Overall] Latest result saved: {result_path}")
+    except Exception as exc:
+        print(f"[Overall] Latest result save failed: {exc}")
+
+
 def send_teams_report(
     title,
     status,
@@ -114,6 +145,7 @@ def send_teams_report(
     run_date = datetime.datetime.now().strftime("%d %b %Y %I:%M %p")
     summary = _summary_from_html(html_body) or _summary_from_steps(step_results)
     flow_details = flow_details or {}
+    _write_latest_result(report_name, status_text, duration, summary, flow_details, report_path, video_path)
 
     facts = [
         {"title": "Date", "value": run_date},
