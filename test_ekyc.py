@@ -34,6 +34,14 @@ try:
     from config import RUN_IPV_AFTER_MOBILE
 except ImportError:
     RUN_IPV_AFTER_MOBILE = False
+try:
+    from config import RESUME_FROM_PROOF_UPLOAD
+except ImportError:
+    RESUME_FROM_PROOF_UPLOAD = False
+RESUME_FROM_PROOF_UPLOAD = os.environ.get(
+    "RESUME_FROM_PROOF_UPLOAD",
+    str(RESUME_FROM_PROOF_UPLOAD),
+).strip().lower() in {"1", "true", "yes", "y"}
 from mailer  import send_report
 
 _original_print = builtins.print
@@ -1424,6 +1432,52 @@ def step_continue_existing_user_to_personal_details(page: Page) -> bool:
 
 
 step_continue_existing_user_after_email = step_continue_existing_user_to_personal_details
+
+
+def step_continue_existing_user_to_document_upload(page: Page) -> bool:
+    STEP = "Resume Existing User To Document Upload"
+    try:
+        page.wait_for_load_state("domcontentloaded", timeout=15_000)
+        page.wait_for_timeout(1_000)
+
+        if "exist_user_details" not in page.url.lower():
+            try:
+                page.goto("https://open.navia.co.in/exist_user_details.php", wait_until="domcontentloaded", timeout=30_000)
+                page.wait_for_timeout(2_000)
+            except Exception:
+                pass
+
+        continue_locators = [
+            "xpath=//form[@id='redform']//input[@type='submit' and contains(@value,'Continue')]",
+            "xpath=//input[contains(@class,'exitbtn') and contains(@value,'Continue')]",
+            "xpath=//input[contains(@value,'Continue')]",
+            "xpath=//*[self::button or self::a][contains(normalize-space(.),'Continue')]",
+        ]
+
+        for locator in continue_locators:
+            try:
+                btn = page.locator(locator).first
+                if btn.is_visible(timeout=5_000):
+                    btn.scroll_into_view_if_needed(timeout=3_000)
+                    btn.click(force=True, timeout=8_000)
+                    try:
+                        page.wait_for_url(lambda url: "proof_upload.php" in url.lower(), timeout=30_000)
+                    except Exception:
+                        page.wait_for_load_state("domcontentloaded", timeout=15_000)
+                    page.wait_for_timeout(2_000)
+                    if "proof_upload.php" in page.url.lower() or "document upload" in page.locator("body").inner_text(timeout=5_000).lower():
+                        log("  Existing user Continue clicked; moving to Document Upload")
+                        step_pass(STEP)
+                        return True
+            except Exception:
+                continue
+
+        step_fail(STEP, "Continue button not found or Document Upload page did not open")
+        return False
+
+    except Exception as e:
+        step_fail(STEP, str(e))
+        return False
 
 
 def step_aadhaar_verification(page: Page, ctx: BrowserContext) -> bool:
@@ -4202,6 +4256,27 @@ def run_ekyc_test() -> str:
                 raise RuntimeError("Mobile OTP failed — aborting")
 
             # ── Step 3: Aadhaar Verification (DigiLocker) ───────────────────
+            if RESUME_FROM_PROOF_UPLOAD:
+                log("  Resume mode ON: after mobile OTP, continuing from Document Upload")
+                if not step_continue_existing_user_to_document_upload(page):
+                    raise RuntimeError("Could not continue from existing user details page to Document Upload")
+
+                if not step_document_upload(page):
+                    log("  Document upload failed â€” continuing")
+
+                step_proceed_to_nominees_or_next(page)
+                step_ipv_capture(page)
+                step_complete_esign_flow(page, ctx)
+
+                failed = [s for s in STEPS if s["status"] == "FAIL"]
+                overall_status = "FAIL" if failed else "PASS"
+                log("=" * 60)
+                log(f"  Overall: {overall_status}")
+                log(f"  Passed : {len([s for s in STEPS if s['status'] == 'PASS'])}")
+                log(f"  Failed : {len(failed)}")
+                log("=" * 60)
+                return overall_status
+
             if RUN_IPV_AFTER_MOBILE:
                 log("  IPV test mode ON: mobile verified, clicking Continue to open IPV")
                 if not click_continue_after_mobile_for_ipv(page):
