@@ -682,6 +682,55 @@ def scroll_open_viewer_to_bottom(page: Page, label: str, max_scrolls: int = 45) 
 
 
 def close_open_document_viewer(page: Page, label: str) -> bool:
+    try:
+        result = page.evaluate("""
+        () => {
+            const popup = document.querySelector("#proof_popup");
+            const visible = el => {
+                if (!el) return false;
+                const r = el.getBoundingClientRect();
+                const s = getComputedStyle(el);
+                return r.width > 0 && r.height > 0 && s.display !== "none" && s.visibility !== "hidden";
+            };
+            const clickButton = btn => {
+                if (!btn) return false;
+                btn.scrollIntoView({block:"center", inline:"center"});
+                const r = btn.getBoundingClientRect();
+                for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
+                    btn.dispatchEvent(new MouseEvent(type, {
+                        bubbles: true,
+                        cancelable: true,
+                        view: window,
+                        clientX: r.left + r.width / 2,
+                        clientY: r.top + r.height / 2
+                    }));
+                }
+                if (typeof btn.click === "function") btn.click();
+                return true;
+            };
+            const btn = document.querySelector("#proof_popup button.close-button[data-close]") ||
+                document.querySelector("#proof_popup [aria-label='Close modal']") ||
+                document.querySelector(".reveal[aria-hidden='false'] button.close-button[data-close]");
+            const clicked = clickButton(btn);
+            const stillOpen = popup && visible(popup) && popup.getAttribute("aria-hidden") !== "true";
+            if (stillOpen) {
+                popup.style.display = "none";
+                popup.setAttribute("aria-hidden", "true");
+                popup.classList.remove("is-open");
+                document.documentElement.classList.remove("is-reveal-open");
+                document.body.classList.remove("is-reveal-open");
+                [...document.querySelectorAll(".reveal-overlay")].forEach(el => el.style.display = "none");
+            }
+            return {ok: clicked || !!popup, clicked, forced: stillOpen};
+        }
+        """)
+        if result and result.get("ok"):
+            page.wait_for_timeout(1_000)
+            log(f"  {label} viewer closed via proof_popup close: {result}")
+            return True
+    except Exception as e:
+        log(f"  {label} proof_popup direct close failed: {e}")
+
     selectors = [
         "css=#proof_popup button.close-button[data-close][aria-label='Close modal']",
         "css=.reveal[aria-hidden='false'] button.close-button[data-close]",
